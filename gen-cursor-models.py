@@ -20,7 +20,6 @@ import json
 import os
 import re
 import sys
-from datetime import datetime
 
 from common import (
     build_header_cells,
@@ -29,6 +28,7 @@ from common import (
     parse_cost,
     parse_family_version,
     resolve_transitive_superseded,
+    stamp_updated,
 )
 
 PAGE_URL = "https://cursor.com/es/docs/models-and-pricing"
@@ -344,7 +344,7 @@ window.addEventListener('resize', fixSticky);
 """
     html = html.replace('%%HEADER_CELLS%%', header_cells)
     html = html.replace('%%PAGE_URL%%', PAGE_URL)
-    html = html.replace('%%UPDATED%%', datetime.now().strftime('%d/%m/%Y %H:%M'))
+    html = stamp_updated(html)
     html = html.replace('%%DATA%%', data)
     html = html.replace('%%HEADERS%%', json.dumps(headers, ensure_ascii=False))
     with open(path, "w", encoding="utf-8") as f:

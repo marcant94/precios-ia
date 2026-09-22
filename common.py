@@ -10,8 +10,43 @@ gen-copilot-models.py y gen-opencode-go-models.py.
 import html as _html
 import re
 import urllib.request
+from datetime import datetime, timezone
 
 UA = "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+
+# Script que convierte las marcas <time datetime> a la zona horaria del visitante.
+_TS_SCRIPT = """<script>
+(function () {
+  document.querySelectorAll("time[data-local]").forEach(function (el) {
+    var d = new Date(el.getAttribute("datetime"));
+    if (isNaN(d.getTime())) return;
+    el.textContent = d.toLocaleString(undefined, {
+      year: "numeric", month: "2-digit", day: "2-digit",
+      hour: "2-digit", minute: "2-digit"
+    });
+    el.title = d.toUTCString();
+  });
+})();
+</script>
+"""
+
+
+def stamp_updated(html: str) -> str:
+    """
+    Sustituye %%UPDATED%% por una marca <time> con fecha/hora de generación en UTC
+    e inyecta un pequeño script que la reescribe en la zona horaria del visitante.
+    Sin JS, se muestra la fecha UTC con la etiqueta "UTC" como fallback.
+    """
+    now = datetime.now(timezone.utc)
+    iso = now.strftime("%Y-%m-%dT%H:%M:%SZ")
+    fallback = now.strftime("%d/%m/%Y %H:%M") + " UTC"
+    html = html.replace(
+        "%%UPDATED%%",
+        f'<time datetime="{iso}" data-local>{fallback}</time>',
+    )
+    if "</body>" in html and _TS_SCRIPT not in html:
+        html = html.replace("</body>", _TS_SCRIPT + "</body>", 1)
+    return html
 
 
 def clean_text(s: str) -> str:

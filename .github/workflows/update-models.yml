@@ -2,7 +2,7 @@ name: Actualizar modelos
 
 on:
   schedule:
-    - cron: "55 0 * * *"
+    - cron: "55 0,6,12,18 * * *"
   workflow_dispatch: {}
   push:
     branches: [main, master]
