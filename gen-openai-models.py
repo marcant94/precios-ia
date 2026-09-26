@@ -266,6 +266,12 @@ let filterText = '';
 
 const numericCols = ['Entrada ($/M)', 'Entrada Caché ($/M)', 'Escritura Caché ($/M)', 'Salida ($/M)', 'Entrada >272K ($/M)', 'Salida >272K ($/M)'];
 
+function fmtPrice(raw) {
+    // Precios con un solo decimal se muestran con 2: $0.1 -> $0.10
+    const m = String(raw).match(/^([$]?)(\\d+)\\.(\\d)$/);
+    return m ? m[1] + m[2] + '.' + m[3] + '0' : String(raw);
+}
+
 function cellValue(r, k) {
     const raw = r[k] || '';
     if (k === 'Modelo') {
@@ -286,7 +292,7 @@ function cellValue(r, k) {
     if (numericCols.includes(k)) {
         if (!raw || raw === '-') return '<span class="muted">-</span>';
         const num = parseFloat(String(raw).replace(/[^0-9.\\-]/g, '')) || 0;
-        return '<span class="numeric" data-num="' + num + '">' + raw + '</span>';
+        return '<span class="numeric" data-num="' + num + '">' + fmtPrice(raw) + '</span>';
     }
     return raw || '';
 }

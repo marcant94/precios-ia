@@ -364,6 +364,12 @@ function fmtCredits(num) {
     return cr % 1 === 0 ? String(cr) : cr.toFixed(1);
 }
 
+function fmtPrice(raw) {
+    // Precios con un solo decimal se muestran con 2: $0.1 -> $0.10
+    const m = String(raw).match(/^([$]?)(\\d+)\\.(\\d)$/);
+    return m ? m[1] + m[2] + '.' + m[3] + '0' : String(raw);
+}
+
 function cellValue(r, k) {
     const raw = r[k] || '';
     if (k === 'Nombre') {
@@ -388,7 +394,7 @@ function cellValue(r, k) {
     if (numericCols.includes(k)) {
         if (!raw || raw === 'Not applicable' || raw === '-') return '<span class="muted">' + (raw || '-') + '</span>';
         const num = parseFloat(String(raw).replace(/[^0-9.\\-]/g, '')) || 0;
-        const disp = unit === 'credits' && num > 0 ? fmtCredits(num) : raw;
+        const disp = unit === 'credits' && num > 0 ? fmtCredits(num) : fmtPrice(raw);
         const sortNum = unit === 'credits' ? num * CREDITS_PER_DOLLAR : num;
         return '<span class="numeric" data-num="' + sortNum + '">' + disp + '</span>';
     }
