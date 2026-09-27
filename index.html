@@ -12,7 +12,8 @@
          display: flex; flex-direction: column; align-items: center; min-height: 100vh; }
   h1 { font-size: 2rem; margin: 0 0 6px; color: #f0f6fc; display: flex; align-items: center; gap: 12px; }
   .subtitle { margin: 0 0 32px; color: #8b949e; font-size: 0.95rem; }
-  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); width: 100%; max-width: 760px; }
+  .grid { display: grid; gap: 16px; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); width: 100%; max-width: 1080px; }
+  @media (min-width: 1024px) { .grid { grid-template-columns: repeat(3, 1fr); } }
   a.card { display: block; padding: 24px; background: #161b22; border: 1px solid #30363d; border-radius: 10px;
            color: #f0f6fc; text-decoration: none; transition: border-color .15s, transform .15s; }
   a.card:hover { border-color: #58a6ff; transform: translateY(-2px); text-decoration: none; }
@@ -27,6 +28,7 @@
   .badge-openai { background: #10a37f; }
   .badge-mistral { background: #ff7000; }
   .badge-cloudflare { background: #f6821f; }
+  .badge-groq { background: #f55036; }
   .icon { vertical-align: middle; fill: currentColor; flex-shrink: 0; }
   footer { margin-top: auto; padding-top: 40px; color: #484f58; font-size: 0.8rem; }
   footer a { color: #58a6ff; text-decoration: none; }
@@ -131,6 +133,17 @@
       <span class="badge badge-cloudflare">Cloudflare</span>
     </h2>
     <p>Modelos de texto, voz, imagen y embeddings con precio en tokens y neuronas; marca los que requieren plan de pago.</p>
+  </a>
+
+  <a class="card" href="./groq_models.html">
+    <h2>
+      <svg class="icon" height="22" width="22" viewBox="0 0 24 24" fill="currentColor">
+        <path d="M13 2 4.5 13.5H11L9.5 22 19 10h-6.5L13 2z"/>
+      </svg>
+      Groq
+      <span class="badge badge-groq">Groq</span>
+    </h2>
+    <p>Modelos servidos en LPUs con precio por millón de tokens, velocidad de inferencia, ventana de contexto y límites.</p>
   </a>
 </div>
 

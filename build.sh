@@ -14,5 +14,6 @@ python3 gen-claude-models.py --out "$OUT"
 python3 gen-openai-models.py --out "$OUT"
 python3 gen-mistral-models.py --out "$OUT"
 python3 gen-cloudflare-models.py --out "$OUT"
+python3 gen-groq-models.py --out "$OUT"
 cp index.html "$OUT/index.html"
 ls -lh "$OUT"/
