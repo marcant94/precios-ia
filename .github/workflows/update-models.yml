@@ -9,6 +9,8 @@ on:
     paths:
       - "gen-*.py"
       - "common.py"
+      - "build.sh"
+      - "index.html"
       - ".github/workflows/update-models.yml"
 
 permissions:
@@ -31,17 +33,7 @@ jobs:
           python-version: "3.14"
 
       - name: Generar HTML en public/
-        run: |
-          python gen-copilot-models.py --out public
-          python gen-opencode-go-models.py --out public
-          python gen-cursor-models.py --out public
-          python gen-google-models.py --out public
-          python gen-claude-models.py --out public
-          python gen-openai-models.py --out public
-          python gen-mistral-models.py --out public
-          python gen-cloudflare-models.py --out public
-          cp index.html public/index.html
-          ls -lh public/
+        run: ./build.sh
 
       - name: Configurar Pages
         uses: actions/configure-pages@v5

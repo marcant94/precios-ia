@@ -67,6 +67,7 @@ def extract_footnotes(page_html: str) -> dict[str, str]:
 # Columnas de salida (sin proveedor: no es dinámico y no aporta valor)
 COLS = [
     ("name",             "Nombre"),
+    ("type",             "Tipo"),
     ("level",            "Nivel"),
     ("threshold",        "Umbral"),
     ("intelligenceTier", "Inteligencia"),
@@ -79,6 +80,7 @@ COLS = [
 
 HEADER_GROUPS = [
     (None, [("name", "Nombre")]),
+    (None, [("type", "Tipo")]),
     (None, [("level", "Nivel")]),
     (None, [("threshold", "Umbral")]),
     (None, [("intelligenceTier", "Inteligencia")]),
@@ -246,6 +248,9 @@ def clean_model(m: dict) -> dict:
     if intel:
         row['Inteligencia'] = intel
 
+    if not row.get('Tipo'):
+        row['Tipo'] = 'Texto'
+
     if 'priceEntry' in m:
         row['Entrada ($/M)'] = m.get('priceEntry', '')
     if 'priceExit' in m:
@@ -279,6 +284,11 @@ def write_html(rows: list[dict], path: str) -> None:
   input[type=search] { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; width: 280px; font-size: 13px; outline: none; }
   input[type=search]:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(56,139,253,0.3); }
+  select#typeFilter { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
+                        background: #161b22; color: #f0f6fc; font-size: 13px; outline: none; }
+  select#typeFilter:focus { border-color: #58a6ff; }
+  .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+              background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .switch { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none;
             font-size: 13px; color: #c9d1d9; }
   .switch input { display: none; }
@@ -333,6 +343,7 @@ def write_html(rows: list[dict], path: str) -> None:
 <br>Actualizado: %%UPDATED%%.<br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre o capacidades.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Copilot...">
+  <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
   <label class="switch" id="unitSwitchWrap" title="1 AI credit = $0.01 USD (oficial). Alterna entre dólares y créditos.">
     <input type="checkbox" id="unitSwitch">
     <span class="track"></span>
@@ -352,6 +363,7 @@ const HEADERS = %%HEADERS%%;
 let sortKey = 'Nombre';
 let sortAsc = true;
 let filterText = '';
+let typeFilter = '';
 
 const numericCols = ['Entrada ($/M)', 'Entrada Caché ($/M)', 'Escritura Caché ($/M)', 'Salida ($/M)'];
 
@@ -398,6 +410,9 @@ function cellValue(r, k) {
         const sortNum = unit === 'credits' ? num * CREDITS_PER_DOLLAR : num;
         return '<span class="numeric" data-num="' + sortNum + '">' + disp + '</span>';
     }
+    if (k === 'Tipo' && raw) {
+        return '<span class="tag-type">' + raw + '</span>';
+    }
     return raw;
 }
 
@@ -426,6 +441,7 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
+    if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     rows.sort(compareRows);
     document.querySelector('#count').textContent = rows.length + ' modelos encontrados';
     tbody.innerHTML = rows.map(r => '<tr class="' + (r._isDeprecated ? 'row-deprecated' : '') + '">' + HEADERS.map(k => '<td>' + cellValue(r, k) + '</td>').join('') + '</tr>').join('');
@@ -453,6 +469,19 @@ document.querySelectorAll('thead th[data-k]').forEach(th => th.addEventListener(
 }));
 
 document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
+
+(function initTypeFilter() {
+  const sel = document.querySelector('#typeFilter');
+  if (!sel) return;
+  const types = [...new Set(DATA.map(r => r['Tipo'] || '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  if (types.length <= 1) sel.style.display = 'none';
+  sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
+})();
 
 document.querySelector('#unitSwitch').addEventListener('change', e => {
     unit = e.target.checked ? 'credits' : 'usd';

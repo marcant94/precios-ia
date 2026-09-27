@@ -40,6 +40,7 @@ PROMO_RE = re.compile(
 # Columnas finales (contexto corto como principal + largo como extra)
 COLS = [
     ("name", "Modelo"),
+    ("type", "Tipo"),
     ("condition", "Condición"),
     ("priceEntry", "Entrada ($/M)"),
     ("priceCacheRead", "Entrada Caché ($/M)"),
@@ -52,6 +53,7 @@ COLS = [
 
 HEADER_GROUPS = [
     (None, [("name", "Modelo")]),
+    (None, [("type", "Tipo")]),
     (None, [("condition", "Condición")]),
     ("Precio contexto corto ($/M)", [
         ("priceEntry", "Entrada"),
@@ -67,45 +69,179 @@ HEADER_GROUPS = [
 ]
 
 
+def clean_md_name(raw: str) -> tuple[str, str]:
+    """Limpia `modelo` y extrae condición entre paréntesis. Devuelve (nombre, condición)."""
+    condition = ''
+    m_cond = re.search(r'\((.*?)\)', raw_name := raw)
+    if m_cond:
+        condition = m_cond.group(1).strip()
+    name = re.sub(r'\s*\(.*?\)', '', raw).strip().strip('`')
+    return name, condition
+
+
+def openai_tipo(section: str, name: str, modality: str = '') -> str:
+    """Clasifica el tipo por sección de la doc y modalidad de la fila."""
+    s = section.lower()
+    m = modality.lower()
+    n = name.lower()
+    if 'transcription' in s or 'transcri' in n or 'whisper' in n:
+        return "Transcripción"
+    if 'image generation' in s or m == 'image' or n.startswith('gpt-image'):
+        return "Imagen"
+    if 'realtime' in s or 'audio generation' in s or 'gpt-live' in s or m == 'audio':
+        return "Voz"
+    if 'finetun' in s:
+        return "Fine-tuning"
+    if 'embedding' in s or n.startswith('text-embedding') or 'moderation' in n:
+        return "Embeddings"
+    if 'specialized' in s or 'cyber' in s:
+        return "Especializado"
+    return "Texto"
+
+
 def parse_md_tables(md: str) -> list[dict]:
-    """Parsea la tabla Markdown 'Standard pricing data' de OpenAI."""
+    """Parsea las tablas Markdown de OpenAI: texto + voz + imagen + transcripción."""
     models: list[dict] = []
     lines = md.splitlines()
+    # Título de sección: última línea no-vacía/no-tabla antes de cada tabla
+    # (p.ej. "Flagship models", "Realtime and audio generation models", ...)
+    section_of = {}
+    last_title = ''
+    for idx, ln in enumerate(lines):
+        s = ln.strip()
+        if not s or s.startswith('|') or s.startswith('<') or s.startswith('>') \
+                or s.startswith('[') or s.startswith('$') or len(s) > 120:
+            continue
+        if re.match(r'^#{1,4}\s', s):
+            if 'pricing' in s.lower():
+                continue  # heading de datos (Standard/Batch/.../Grouped/Pricing Table data)
+            last_title = re.sub(r'^#{1,4}\s*', '', s).strip()
+            continue
+        if re.match(r'^[A-Z]', s) and re.search(r'(models|sessions|finetuning|tools)$', s, re.IGNORECASE):
+            last_title = s
+        if s in ('Standard', 'Batch', 'Flex', 'Fast mode'):
+            continue
+        section_of[idx] = last_title
+
+    def section_at(i: int) -> str:
+        best = ''
+        for idx in sorted(section_of):
+            if idx < i:
+                best = section_of[idx]
+            else:
+                break
+        return best
+
+    def tier_at(i: int) -> str:
+        """Tier (Standard/Batch/Flex/Fast mode) de la tabla que empieza en la línea i."""
+        for j in range(i - 1, max(i - 30, -1), -1):
+            s = lines[j].strip()
+            if 'pricing' in s.lower() and re.match(r'^#{1,4}\s', s):
+                continue  # el propio heading de la tabla, seguir buscando
+            if re.match(r'^#{1,4}\s', s):
+                break
+            # El tier viene como texto suelto (p.ej. "Standard", "Batch")
+            m = re.match(r'^(Standard|Batch|Flex|Fast mode)\s*$', s)
+            if m:
+                return m.group(1)
+        return ''
+
     i = 0
     in_standard_table = False
+    skip_tier_table = False  # Tablas Batch/Flex/Fast: mismos modelos con otro tier, se omiten
 
     while i < len(lines):
         line = lines[i].strip()
         if re.match(r'###\s+Standard pricing data', line):
             in_standard_table = True
-        elif re.match(r'###\s+', line) and in_standard_table:
+            skip_tier_table = False
+        elif re.match(r'###\s+(Batch|Flex|Fast) pricing data', line):
             in_standard_table = False
+            skip_tier_table = True
+        elif re.match(r'###\s+', line):
+            in_standard_table = False
+            skip_tier_table = False
 
-        if in_standard_table and line.startswith('|') and i + 1 < len(lines) and re.match(r'^\|[\s:\-|]+\|\s*$', lines[i + 1].strip()):
+        if line.startswith('|') and i + 1 < len(lines) and re.match(r'^\|[\s:\-|]+\|\s*$', lines[i + 1].strip()):
             headers = [h.strip().lower() for h in line.strip('|').split('|')]
+            section = section_at(i)
+            has_model = any('model' in h for h in headers)
+            if not has_model:
+                i += 1
+                continue
+            # Solo tablas de modelos (con columnas de precio); se excluyen
+            # tablas de herramientas (Tool/Details/Pricing) y los tiers
+            # Batch/Flex/Fast (mismos modelos de texto con otro precio).
+            if skip_tier_table:
+                i += 1
+                continue
+            # Tablas agrupadas con tier Batch/Fast (imagen, specialized,
+            # finetune): mismos modelos con otro precio, se omiten.
+            if not in_standard_table and tier_at(i) not in ('', 'Standard'):
+                i += 1
+                continue
+            if not any(k in ' '.join(headers) for k in ('input', 'output', 'price', 'training')):
+                i += 1
+                continue
             i += 2
             while i < len(lines) and lines[i].strip().startswith('|'):
-                cells = [c.strip() for c in lines[i].strip().strip('|').split('|')]
+                cells = [c.strip().strip('`') for c in lines[i].strip().strip('|').split('|')]
                 row = dict(zip(headers, cells))
                 raw_name = row.get('model', '')
                 if raw_name and raw_name.lower() != 'model':
-                    # Detectar condición (p.ej. "<272K context length")
-                    condition = ''
-                    m_cond = re.search(r'\((.*?)\)', raw_name)
-                    if m_cond:
-                        condition = m_cond.group(1).strip()
-                    name = re.sub(r'\s*\(.*?\)', '', raw_name).strip()
-
-                    models.append({
-                        'name': name,
-                        'condition': condition,
-                        'priceEntry': row.get('short context input', ''),
-                        'priceCacheRead': row.get('short context cached input', ''),
-                        'priceCacheWrite': row.get('short context cache writes', ''),
-                        'priceExit': row.get('short context output', ''),
-                        'priceEntryLong': row.get('long context input', ''),
-                        'priceExitLong': row.get('long context output', ''),
-                    })
+                    name, condition = clean_md_name(raw_name)
+                    modality = row.get('modality', '')
+                    tipo = openai_tipo(section, name, modality)
+                    if in_standard_table and not modality and 'model' in row:
+                        # Tabla principal de texto (Standard pricing data)
+                        models.append({
+                            'name': name,
+                            'type': 'Texto',
+                            'condition': condition,
+                            'priceEntry': row.get('short context input', ''),
+                            'priceCacheRead': row.get('short context cached input', ''),
+                            'priceCacheWrite': row.get('short context cache writes', ''),
+                            'priceExit': row.get('short context output', ''),
+                            'priceEntryLong': row.get('long context input', ''),
+                            'priceExitLong': row.get('long context output', ''),
+                            'notes': '',
+                        })
+                    elif not in_standard_table:
+                        notes = ''
+                        if modality:
+                            notes = f"Modalidad: {modality}"
+                        if row.get('use case'):
+                            notes = f"Uso: {row.get('use case')}"
+                        if row.get('category'):
+                            notes = f"Categoría: {row.get('category')}"
+                        if row.get('estimated cost') and row.get('estimated cost') != '-':
+                            notes = (notes + '; ' if notes else '') + f"Estimado: {row.get('estimated cost')}"
+                        if row.get('training') and row.get('training') != '-':
+                            notes = (notes + '; ' if notes else '') + f"Entrenamiento: {row.get('training')}"
+                        entry = row.get('input', row.get('short context input', ''))
+                        exit_ = row.get('output', row.get('output / cost', row.get('short context output', '')))
+                        # Tablas con precio por minuto (GPT-Live, transcripción):
+                        # rescatarlo en Entrada para no perder la fila.
+                        if not entry and not exit_:
+                            per_min = row.get('price per minute', '') or row.get('estimated cost', '')
+                            if per_min and per_min != '-':
+                                entry = per_min
+                                notes = (notes + '; ' if notes else '') + 'Precio por minuto'
+                            else:
+                                i += 1
+                                continue
+                        models.append({
+                            'name': name,
+                            'type': tipo,
+                            'condition': condition or section,
+                            'priceEntry': entry,
+                            'priceCacheRead': row.get('cached input', row.get('short context cached input', '')),
+                            'priceCacheWrite': row.get('cache writes', row.get('short context cache writes', '')),
+                            'priceExit': exit_,
+                            'priceEntryLong': row.get('long context input', ''),
+                            'priceExitLong': row.get('long context output', ''),
+                            'notes': notes,
+                        })
                 i += 1
             continue
         i += 1
@@ -211,6 +347,11 @@ def write_html(rows: list[dict], path: str) -> None:
   input[type=search] { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; width: 280px; font-size: 13px; outline: none; }
   input[type=search]:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(56,139,253,0.3); }
+  select#typeFilter { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
+                        background: #161b22; color: #f0f6fc; font-size: 13px; outline: none; }
+  select#typeFilter:focus { border-color: #58a6ff; }
+  .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+              background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; text-align: left; }
   thead th { position: sticky; background: #21262d; color: #f0f6fc; cursor: pointer;
@@ -223,7 +364,7 @@ def write_html(rows: list[dict], path: str) -> None:
   tbody tr:hover { background: #1f242c; }
   tbody tr.row-deprecated { opacity: 0.55; }
   tbody tr.row-deprecated:hover { opacity: 0.85; background: #261f22; }
-  tbody tr.row-deprecated td:nth-child(2) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
+  tbody tr.row-deprecated td:nth-child(1) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
   .tag-deprecated { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #da363322; color: #f85149; border: 1px solid #da363366; text-decoration: none; vertical-align: middle; }
   .tag-promo { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #bb800922; color: #e3b341; border: 1px solid #bb800966; vertical-align: middle; cursor: help; }
   td.numeric, th.numeric { text-align: right; }
@@ -249,6 +390,7 @@ def write_html(rows: list[dict], path: str) -> None:
 <br>Actualizado: %%UPDATED%%. Haz clic en cualquier columna para ordenar. Filtra libremente por nombre o condición.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de OpenAI...">
+  <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
   <span class="muted" id="count"></span>
 </div>
 <div class="table-wrap">
@@ -263,6 +405,7 @@ const HEADERS = %%HEADERS%%;
 let sortKey = 'Modelo';
 let sortAsc = true;
 let filterText = '';
+let typeFilter = '';
 
 const numericCols = ['Entrada ($/M)', 'Entrada Caché ($/M)', 'Escritura Caché ($/M)', 'Salida ($/M)', 'Entrada >272K ($/M)', 'Salida >272K ($/M)'];
 
@@ -294,6 +437,9 @@ function cellValue(r, k) {
         const num = parseFloat(String(raw).replace(/[^0-9.\\-]/g, '')) || 0;
         return '<span class="numeric" data-num="' + num + '">' + fmtPrice(raw) + '</span>';
     }
+    if (k === 'Tipo' && raw) {
+        return '<span class="tag-type">' + raw + '</span>';
+    }
     return raw || '';
 }
 
@@ -314,6 +460,7 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
+    if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     rows.sort(compareRows);
     document.querySelector('#count').textContent = rows.length + ' modelos encontrados';
     tbody.innerHTML = rows.map(r => '<tr class="' + (r._isDeprecated ? 'row-deprecated' : '') + '">' + HEADERS.map(k => '<td class="' + (k === 'Notas' ? 'notes' : '') + '">' + cellValue(r, k) + '</td>').join('') + '</tr>').join('');
@@ -341,6 +488,19 @@ document.querySelectorAll('thead th[data-k]').forEach(th => th.addEventListener(
 }));
 
 document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
+
+(function initTypeFilter() {
+  const sel = document.querySelector('#typeFilter');
+  if (!sel) return;
+  const types = [...new Set(DATA.map(r => r['Tipo'] || '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  if (types.length <= 1) sel.style.display = 'none';
+  sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
+})();
 
 render();
 fixSticky();

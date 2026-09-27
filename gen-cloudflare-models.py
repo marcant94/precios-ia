@@ -34,6 +34,7 @@ MD_URL = "https://developers.cloudflare.com/workers-ai/platform/pricing/index.md
 
 COLS = [
     ("name", "Modelo"),
+    ("type", "Tipo"),
     ("freePlan", "Plan gratuito"),
     ("priceEntry", "Entrada ($/M)"),
     ("priceCache", "Caché entrada ($/M)"),
@@ -44,6 +45,7 @@ COLS = [
 
 HEADER_GROUPS = [
     (None, [("name", "Modelo")]),
+    (None, [("type", "Tipo")]),
     (None, [("freePlan", "Plan gratuito")]),
     ("Precio ($/M tokens)", [
         ("priceEntry", "Entrada"),
@@ -54,16 +56,11 @@ HEADER_GROUPS = [
     (None, [("notes", "Notas")]),
 ]
 
-# Solo generación de texto, como Claude/Copilot/Cursor:
-# únicamente la sección "LLM model pricing" con precio de
-# entrada y salida por millón de tokens.
-WANT_SECTION = "LLM"
-
 CATEGORY_MAP = [
-    ("llm", "LLM"),
+    ("llm", "Texto"),
     ("embedding", "Embeddings"),
     ("image", "Imagen"),
-    ("audio", "Audio"),
+    ("audio", "Voz"),
     ("other", "Otros"),
 ]
 
@@ -157,15 +154,14 @@ def parse_md_tables(md: str, paid: set[str]) -> list[dict]:
                     continue
                 price_tokens = clean_cell(row.get("price in tokens", ""))
                 price_neurons = clean_cell(row.get("price in neurons", ""))
-                # Solo LLM (texto); el resto de secciones se ignoran
-                if current_section != WANT_SECTION:
-                    i += 1
-                    continue
                 entry, cache, exit_ = extract_m_prices(price_tokens)
-                # Solo modelos con precio de entrada y salida por M tokens
-                if not entry or not exit_:
-                    i += 1
-                    continue
+                # Modelos no-LLM (embeddings/imagen/audio/otros) no tienen
+                # precio por M tokens: mostrar el precio tal cual en Entrada.
+                if not entry and not exit_:
+                    if not price_tokens:
+                        i += 1
+                        continue
+                    entry = price_tokens[:140]
                 requires_paid = raw_name.lower() in paid
                 notes = (
                     "Requiere Workers Paid o AI Gateway credits (no disponible con cuota gratuita)."
@@ -174,6 +170,7 @@ def parse_md_tables(md: str, paid: set[str]) -> list[dict]:
                 )
                 models.append({
                     "name": raw_name,
+                    "type": current_section,
                     "freePlan": "Requiere pago" if requires_paid else "Sí",
                     "priceEntry": entry,
                     "priceCache": cache,
@@ -238,6 +235,11 @@ def write_html(rows: list[dict], path: str) -> None:
   input[type=search] { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; width: 280px; font-size: 13px; outline: none; }
   input[type=search]:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(56,139,253,0.3); }
+  select#typeFilter { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
+                        background: #161b22; color: #f0f6fc; font-size: 13px; outline: none; }
+  select#typeFilter:focus { border-color: #58a6ff; }
+  .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+              background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; text-align: left; }
   thead th { position: sticky; background: #21262d; color: #f0f6fc; cursor: pointer;
@@ -250,8 +252,8 @@ def write_html(rows: list[dict], path: str) -> None:
   tbody tr:hover { background: #1f242c; }
   tbody tr.row-deprecated { opacity: 0.55; }
   tbody tr.row-deprecated:hover { opacity: 0.85; background: #261f22; }
-  tbody tr.row-deprecated td:nth-child(2) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
-  tbody tr.row-paid td:nth-child(2) { color: #e3b341; }
+  tbody tr.row-deprecated td:nth-child(1) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
+  tbody tr.row-paid td:nth-child(1) { color: #e3b341; }
   .tag-deprecated { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #da363322; color: #f85149; border: 1px solid #da363366; text-decoration: none; vertical-align: middle; }
   .tag-promo { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #bb800922; color: #e3b341; border: 1px solid #bb800966; vertical-align: middle; cursor: help; }
   .tag-paid { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #9e6a0322; color: #e3b341; border: 1px solid #9e6a0366; vertical-align: middle; }
@@ -279,10 +281,11 @@ def write_html(rows: list[dict], path: str) -> None:
   <span class="badge-cloudflare">Cloudflare</span>
 </h1>
 <p class="muted">Datos referenciados desde la documentación oficial de <a href="%%PAGE_URL%%" target="_blank">%%PAGE_URL%%</a>.
-<br>Actualizado: %%UPDATED%%. Solo modelos LLM de generación de texto. Cuota gratuita: 10.000 Neuronas/día ($0.011 / 1.000 Neuronas por encima).
+<br>Actualizado: %%UPDATED%%. Todos los tipos de modelo (filtra por Tipo). Cuota gratuita: 10.000 Neuronas/día ($0.011 / 1.000 Neuronas por encima).
 <br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Cloudflare...">
+  <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
   <label class="muted" style="font-size:13px"><input type="checkbox" id="onlyFree" style="vertical-align:middle"> Solo plan gratuito</label>
   <span class="muted" id="count"></span>
 </div>
@@ -298,6 +301,7 @@ const HEADERS = %%HEADERS%%;
 let sortKey = 'Modelo';
 let sortAsc = true;
 let filterText = '';
+let typeFilter = '';
 let onlyFree = false;
 
 const numericCols = ['Entrada ($/M)', 'Cach\\u00e9 entrada ($/M)', 'Salida ($/M)'];
@@ -336,6 +340,9 @@ function cellValue(r, k) {
         const num = parseFloat(String(raw).replace(/[^0-9.\\-]/g, '')) || 0;
         return '<span class="numeric" data-num="' + num + '">' + fmtPrice(raw) + '</span>';
     }
+    if (k === 'Tipo' && raw) {
+        return '<span class="tag-type">' + raw + '</span>';
+    }
     return raw || '';
 }
 
@@ -356,6 +363,7 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
+    if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     if (onlyFree) rows = rows.filter(r => !r._requiresPaid);
     rows.sort(compareRows);
     document.querySelector('#count').textContent = rows.length + ' modelos encontrados';
@@ -384,6 +392,19 @@ document.querySelectorAll('thead th[data-k]').forEach(th => th.addEventListener(
 }));
 
 document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
+
+(function initTypeFilter() {
+  const sel = document.querySelector('#typeFilter');
+  if (!sel) return;
+  const types = [...new Set(DATA.map(r => r['Tipo'] || '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  if (types.length <= 1) sel.style.display = 'none';
+  sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
+})();
 document.querySelector('#onlyFree').addEventListener('change', e => { onlyFree = e.target.checked; render(); });
 
 render();

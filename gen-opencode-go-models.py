@@ -41,6 +41,7 @@ BANNER_URLS = [
 # Columnas finales (sin proveedor: heurístico no dinámico, se elimina)
 COLS = [
     ("name",            "Modelo"),
+    ("type",            "Tipo"),
     ("condition",       "Condición / Umbral"),
     ("priceEntry",      "Entrada ($/M)"),
     ("priceCacheRead",  "Entrada Caché ($/M)"),
@@ -55,6 +56,7 @@ COLS = [
 ]
 
 HEADER_GROUPS = [    (None, [("name", "Modelo")]),
+    (None, [("type", "Tipo")]),
     (None, [("condition", "Condición")]),
     ("Precio ($/M)", [
         ("priceEntry", "Entrada"),
@@ -239,8 +241,12 @@ def clean_row(m: dict) -> dict:
     row: dict[str, str] = {}
     for key, label in COLS:
         v = m.get(key, '')
+        if key == 'type' and not v:
+            v = 'Texto'
         if v == '-' or v == 'None' or v is None:
             v = '-'
+        if key == 'type' and v == '-':
+            v = 'Texto'
         row[label] = v
     row['_isDeprecated'] = m.get('_isDeprecated', False)
     row['_supersededBy'] = m.get('_supersededBy', '')
@@ -271,6 +277,11 @@ def write_html(rows: list[dict], path: str) -> None:
   input[type=search] { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; width: 280px; font-size: 13px; outline: none; }
   input[type=search]:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(56,139,253,0.3); }
+  select#typeFilter { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
+                        background: #161b22; color: #f0f6fc; font-size: 13px; outline: none; }
+  select#typeFilter:focus { border-color: #58a6ff; }
+  .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+              background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; text-align: left; }
   thead th { position: sticky; background: #21262d; color: #f0f6fc; cursor: pointer;
@@ -319,6 +330,7 @@ def write_html(rows: list[dict], path: str) -> None:
 <br>Actualizado: %%UPDATED%%.<br>Incluye límites de uso (5h: $12, semanal: $30, mensual: $60) y estimación de peticiones.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de OpenCode Go...">
+  <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
   <label class="switch" title="Mostrar solo modelos con límite mensual ≥ $60">
     <input type="checkbox" id="budgetSwitch">
     <span class="track"></span>
@@ -338,6 +350,7 @@ const HEADERS = %%HEADERS%%;
 let sortKey = 'Modelo';
 let sortAsc = true;
 let filterText = '';
+let typeFilter = '';
 let budgetFilter = false;
 
 const numericCols = [
@@ -376,6 +389,9 @@ function cellValue(r, k) {
         const disp = k.indexOf('($/M)') !== -1 ? fmtPrice(raw) : raw;
         return '<span class="numeric" data-num="' + num + '">' + disp + '</span>';
     }
+    if (k === 'Tipo' && raw) {
+        return '<span class="tag-type">' + raw + '</span>';
+    }
     return raw || '';
 }
 
@@ -396,6 +412,7 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
+    if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     if (budgetFilter) {
         rows = rows.filter(r => {
             const raw = r['Límite Mensual Incluido'] || '';
@@ -430,6 +447,19 @@ document.querySelectorAll('thead th[data-k]').forEach(th => th.addEventListener(
 }));
 
 document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
+
+(function initTypeFilter() {
+  const sel = document.querySelector('#typeFilter');
+  if (!sel) return;
+  const types = [...new Set(DATA.map(r => r['Tipo'] || '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  if (types.length <= 1) sel.style.display = 'none';
+  sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
+})();
 
 document.querySelector('#budgetSwitch').addEventListener('change', e => { budgetFilter = e.target.checked; render(); });
 

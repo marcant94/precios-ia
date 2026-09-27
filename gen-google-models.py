@@ -42,9 +42,28 @@ def fetch_html(url: str, timeout: int = 30) -> str:
 
 PAGE_URL = "https://ai.google.dev/gemini-api/docs/pricing?hl=es-419"
 
-# Palabras clave para excluir modelos no relevantes (video, música, embeddings, etc.)
-EXCLUDE_KEYWORDS = re.compile(
-    r'veo|lyria|embedding|robotics|computer use|gemma|imagen(?!\s)',
+# Clasificación por tipo a partir del nombre del modelo.
+# Prioridad: música > video > imagen > voz/audio > embeddings > robótica > texto.
+def google_tipo(name: str) -> str:
+    low = name.lower()
+    if re.search(r'\blyria\b', low):
+        return "Música"
+    if re.search(r'\bveo\b|omni', low):
+        return "Video"
+    if re.search(r'image|imagen|nano banana', low):
+        return "Imagen"
+    if re.search(r'live|transcribe|transcri|tts|native audio|voz|audio', low):
+        return "Voz"
+    if re.search(r'embedding', low):
+        return "Embeddings"
+    if re.search(r'robotics|computer use|gemma', low):
+        return "Otros"
+    return "Texto"
+
+# Secciones que no son modelos (herramientas, agentes, notas, índices)
+SKIP_SECTIONS = re.compile(
+    r'pricing for tools|pricing for agents|notes|additional links|sitemap'
+    r'|precios de las herramientas|precios para agentes|notas|enlaces adicionales',
     re.IGNORECASE,
 )
 
@@ -57,6 +76,7 @@ PROMO_RE = re.compile(
 # Columnas finales
 COLS = [
     ("name", "Modelo"),
+    ("type", "Tipo"),
     ("description", "Descripción"),
     ("priceInput", "Entrada ($/M)"),
     ("priceOutput", "Salida ($/M)"),
@@ -68,6 +88,7 @@ COLS = [
 
 HEADER_GROUPS = [
     (None, [("name", "Modelo")]),
+    (None, [("type", "Tipo")]),
     (None, [("description", "Descripción")]),
     ("Precio ($/M)", [
         ("priceInput", "Entrada"),
@@ -184,10 +205,8 @@ def parse_google_models(html: str) -> list[dict]:
         name = re.sub(r'\[([^\]]+)\]\([^\)]+\)', r'\1', h2_text).strip()
         name = re.sub(r'\s+', ' ', name)
 
-        # Filtrar secciones que no son modelos de chat/generación de texto
-        if not name or EXCLUDE_KEYWORDS.search(name):
-            continue
-        if any(kw in name.lower() for kw in ['pricing for tools', 'pricing for agents', 'notes', 'additional links', 'sitemap', 'precios de las herramientas', 'precios para agentes', 'notas', 'enlaces adicionales']):
+        # Filtrar secciones que no son modelos (herramientas, agentes, notas...)
+        if not name or SKIP_SECTIONS.search(name):
             continue
 
         # Obtener descripción del modelo
@@ -209,6 +228,15 @@ def parse_google_models(html: str) -> list[dict]:
 
         prices = extract_section_prices(section_content)
 
+        # Modelos sin precio por token (video por segundo, música por
+        # canción...): rescatar el primer precio como referencia.
+        extra_note = ''
+        if not prices['priceInput'] and not prices['priceOutput']:
+            m_any = re.search(r'USD\s*([0-9]+(?:\.[0-9]+)?)', section_content)
+            if m_any:
+                prices['priceInput'] = f"${m_any.group(1)}"
+                extra_note = 'Precio no por token: ver documentación'
+
         # Determinar promo
         promo = ''
         if PROMO_RE.search(section_content):
@@ -217,13 +245,14 @@ def parse_google_models(html: str) -> list[dict]:
 
         models.append({
             'name': name,
+            'type': google_tipo(name),
             'description': description[:120] + ('...' if len(description) > 120 else ''),
             'priceInput': prices['priceInput'],
             'priceOutput': prices['priceOutput'],
             'priceCacheRead': prices['priceCacheRead'],
             'priceCacheStorage': prices['priceCacheStorage'],
             'freeTier': prices['freeTier'] or 'No',
-            'notes': promo,
+            'notes': '; '.join(n for n in (promo, extra_note) if n),
         })
 
     if not models:
@@ -298,6 +327,11 @@ def write_html(rows: list[dict], path: str) -> None:
   input[type=search] { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; width: 280px; font-size: 13px; outline: none; }
   input[type=search]:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(56,139,253,0.3); }
+  select#typeFilter { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
+                        background: #161b22; color: #f0f6fc; font-size: 13px; outline: none; }
+  select#typeFilter:focus { border-color: #58a6ff; }
+  .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+              background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; text-align: left; }
   thead th { position: sticky; background: #21262d; color: #f0f6fc; cursor: pointer;
@@ -310,7 +344,7 @@ def write_html(rows: list[dict], path: str) -> None:
   tbody tr:hover { background: #1f242c; }
   tbody tr.row-deprecated { opacity: 0.55; }
   tbody tr.row-deprecated:hover { opacity: 0.85; background: #261f22; }
-  tbody tr.row-deprecated td:nth-child(2) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
+  tbody tr.row-deprecated td:nth-child(1) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
   .tag-deprecated { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #da363322; color: #f85149; border: 1px solid #da363366; text-decoration: none; vertical-align: middle; }
   .tag-promo { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #bb800922; color: #e3b341; border: 1px solid #bb800966; vertical-align: middle; cursor: help; }
   .tag-free { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #23863622; color: #3fb950; border: 1px solid #23863666; }
@@ -339,6 +373,7 @@ def write_html(rows: list[dict], path: str) -> None:
 <br>Actualizado: %%UPDATED%%.<br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre o descripción.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Gemini...">
+  <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
   <span class="muted" id="count"></span>
 </div>
 <div class="table-wrap">
@@ -353,6 +388,7 @@ const HEADERS = %%HEADERS%%;
 let sortKey = 'Modelo';
 let sortAsc = true;
 let filterText = '';
+let typeFilter = '';
 
 const numericCols = ['Entrada ($/M)', 'Salida ($/M)', 'Lectura Caché ($/M)', 'Almac. Caché ($/M\\u00b7h)'];
 
@@ -391,6 +427,9 @@ function cellValue(r, k) {
         const num = parseFloat(String(raw).replace(/[^0-9.\\-]/g, '')) || 0;
         return '<span class="numeric" data-num="' + num + '">' + fmtPrice(raw) + '</span>';
     }
+    if (k === 'Tipo' && raw) {
+        return '<span class="tag-type">' + raw + '</span>';
+    }
     return raw || '';
 }
 
@@ -411,6 +450,7 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
+    if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     rows.sort(compareRows);
     document.querySelector('#count').textContent = rows.length + ' modelos encontrados';
     tbody.innerHTML = rows.map(r => '<tr class="' + (r._isDeprecated ? 'row-deprecated' : '') + '">' + HEADERS.map(k => '<td class="' + (k === 'Descripci\\u00f3n' ? 'desc' : k === 'Notas' ? 'notes' : '') + '">' + cellValue(r, k) + '</td>').join('') + '</tr>').join('');
@@ -438,6 +478,19 @@ document.querySelectorAll('thead th[data-k]').forEach(th => th.addEventListener(
 }));
 
 document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
+
+(function initTypeFilter() {
+  const sel = document.querySelector('#typeFilter');
+  if (!sel) return;
+  const types = [...new Set(DATA.map(r => r['Tipo'] || '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  if (types.length <= 1) sel.style.display = 'none';
+  sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
+})();
 
 render();
 fixSticky();

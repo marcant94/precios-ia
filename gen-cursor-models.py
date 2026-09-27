@@ -38,6 +38,7 @@ MD_URL = "https://cursor.com/docs/models-and-pricing.md"
 COLS = [
     ("pool", "Pool"),
     ("name", "Modelo"),
+    ("type", "Tipo"),
     ("provider", "Proveedor"),
     ("priceEntry", "Entrada ($/M)"),
     ("priceCacheWrite", "Escritura Caché ($/M)"),
@@ -50,6 +51,7 @@ COLS = [
 HEADER_GROUPS = [
     (None, [("pool", "Pool")]),
     (None, [("name", "Modelo")]),
+    (None, [("type", "Tipo")]),
     (None, [("provider", "Proveedor")]),
     ("Precio ($/M)", [
         ("priceEntry", "Entrada"),
@@ -168,6 +170,8 @@ def clean_model(m: dict) -> dict:
     row: dict[str, str] = {}
     for key, label in COLS:
         v = m.get(key, '')
+        if key == 'type' and not v:
+            v = 'Texto'
         if v is None:
             v = ''
         row[label] = v
@@ -200,6 +204,11 @@ def write_html(rows: list[dict], path: str) -> None:
   input[type=search] { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; width: 280px; font-size: 13px; outline: none; }
   input[type=search]:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(56,139,253,0.3); }
+  select#typeFilter { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
+                        background: #161b22; color: #f0f6fc; font-size: 13px; outline: none; }
+  select#typeFilter:focus { border-color: #58a6ff; }
+  .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+              background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; text-align: left; }
   thead th { position: sticky; background: #21262d; color: #f0f6fc; cursor: pointer;
@@ -241,6 +250,7 @@ def write_html(rows: list[dict], path: str) -> None:
 <br>Actualizado: %%UPDATED%%.<br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre, proveedor o notas.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Cursor...">
+  <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
   <span class="muted" id="count"></span>
 </div>
 <div class="table-wrap">
@@ -255,6 +265,7 @@ const HEADERS = %%HEADERS%%;
 let sortKey = 'Modelo';
 let sortAsc = true;
 let filterText = '';
+let typeFilter = '';
 
 const numericCols = ['Entrada ($/M)', 'Escritura Caché ($/M)', 'Lectura Caché ($/M)', 'Salida ($/M)'];
 
@@ -293,6 +304,9 @@ function cellValue(r, k) {
         const num = parseFloat(String(raw).replace(/[^0-9.\\-]/g, '')) || 0;
         return '<span class="numeric" data-num="' + num + '">' + fmtPrice(raw) + '</span>';
     }
+    if (k === 'Tipo' && raw) {
+        return '<span class="tag-type">' + raw + '</span>';
+    }
     return raw || '';
 }
 
@@ -313,6 +327,7 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
+    if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     rows.sort(compareRows);
     document.querySelector('#count').textContent = rows.length + ' modelos encontrados';
     tbody.innerHTML = rows.map(r => '<tr class="' + (r._isDeprecated ? 'row-deprecated' : '') + '">' + HEADERS.map(k => '<td class="' + (k === 'Notas' ? 'notes' : '') + '">' + cellValue(r, k) + '</td>').join('') + '</tr>').join('');
@@ -340,6 +355,19 @@ document.querySelectorAll('thead th[data-k]').forEach(th => th.addEventListener(
 }));
 
 document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
+
+(function initTypeFilter() {
+  const sel = document.querySelector('#typeFilter');
+  if (!sel) return;
+  const types = [...new Set(DATA.map(r => r['Tipo'] || '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  if (types.length <= 1) sel.style.display = 'none';
+  sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
+})();
 
 render();
 fixSticky();

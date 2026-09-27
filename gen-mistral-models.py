@@ -28,6 +28,7 @@ PAGE_URL = "https://mistral.ai/pricing/api/"
 
 COLS = [
     ("name", "Modelo"),
+    ("type", "Tipo"),
     ("license", "Licencia"),
     ("category", "Categoría"),
     ("priceEntry", "Entrada ($/M)"),
@@ -37,6 +38,7 @@ COLS = [
 
 HEADER_GROUPS = [
     (None, [("name", "Modelo")]),
+    (None, [("type", "Tipo")]),
     (None, [("license", "Licencia")]),
     (None, [("category", "Categoría")]),
     ("Precio ($/M tokens)", [
@@ -46,17 +48,25 @@ HEADER_GROUPS = [
     (None, [("notes", "Notas")]),
 ]
 
-# Solo generación de texto, como Claude/Copilot/Cursor:
-# se excluyen OCR, audio/transcripción/voz, embeddings,
-# clasificación/moderación y herramientas (sin precio por token).
-EXCLUDE_CATS = {
-    "ocr",
-    "transcription",
-    "voice",
-    "embedding",
-    "classifier-apis",
-    "tools",
-}
+# Tipos principales (una etiqueta por modelo para el desplegable).
+# Prioridad: OCR > transcripción > voz > embeddings > clasificación > herramientas > texto.
+def mistral_tipo(cats: list[str], name: str, labels: list[str]) -> str:
+    low_cats = [c.lower() for c in cats]
+    low_name = name.lower()
+    low_labels = " ".join(labels).lower()
+    if "ocr" in low_cats or "ocr" in low_name or re.search(r"\bocr\b", low_labels):
+        return "OCR / Documento"
+    if "transcription" in low_cats or "transcri" in low_name:
+        return "Transcripción"
+    if "voice" in low_cats or "tts" in low_name or "audio generation" in low_labels:
+        return "Voz"
+    if "embedding" in low_cats or "embed" in low_name:
+        return "Embeddings"
+    if "classifier-apis" in low_cats or "moderation" in low_name or "classifier" in low_name:
+        return "Clasificación"
+    if "tools" in low_cats:
+        return "Herramientas"
+    return "Texto"
 
 TITLE_RE = re.compile(r'<p class="text-h5[^>]*>(.*?)</p>', re.S)
 DESC_RE = re.compile(r'<p class="text-body-base text-current">(.*?)</p>', re.S)
@@ -117,9 +127,6 @@ def parse_card(title: str, seg: str) -> dict | None:
     # La tarjeta de filtros "Enterprise APIs" lista todas las categorías
     if len(cats) > 10:
         return None
-    # Solo generación de texto (como Claude/Copilot/Cursor)
-    if any(c in EXCLUDE_CATS for c in cats):
-        return None
 
     descs = [clean_text(d) for d in DESC_RE.findall(seg)]
     description = descs[0] if descs else ""
@@ -162,16 +169,28 @@ def parse_card(title: str, seg: str) -> dict | None:
         prices.append((label, amount))
 
     entry = exit_ = ""
+    extra_prices: list[str] = []
     for label, amount in prices:
         low = label.lower()
         if low == "input (/m tokens)":
             entry = amount
         elif low == "output (/m tokens)":
             exit_ = amount
+        else:
+            extra_prices.append(f"{label}: {amount}")
 
-    # Solo modelos de texto con precio de entrada y salida por token
-    if not entry or not exit_:
-        return None
+    tipo = mistral_tipo(cats, name, [p[0] for p in prices])
+    # Texto exige entrada+salida por token; el resto muestra su precio
+    # específico (OCR por páginas, voz por min/carácter, etc.).
+    if tipo == "Texto":
+        if not entry or not exit_:
+            return None
+    elif not entry and not exit_:
+        if not prices:
+            return None
+        entry = "; ".join(extra_prices[:3])[:160]
+    elif extra_prices and (not entry or not exit_):
+        entry = entry or "; ".join(extra_prices[:3])[:160]
 
     seg_text = clean_text(seg)
     notes_parts: list[str] = []
@@ -185,6 +204,7 @@ def parse_card(title: str, seg: str) -> dict | None:
 
     return {
         "name": name,
+        "type": tipo,
         "license": license_,
         "category": category,
         "priceEntry": entry,
@@ -262,6 +282,11 @@ def write_html(rows: list[dict], path: str) -> None:
   input[type=search] { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; width: 280px; font-size: 13px; outline: none; }
   input[type=search]:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(56,139,253,0.3); }
+  select#typeFilter { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
+                        background: #161b22; color: #f0f6fc; font-size: 13px; outline: none; }
+  select#typeFilter:focus { border-color: #58a6ff; }
+  .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+              background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; text-align: left; }
   thead th { position: sticky; background: #21262d; color: #f0f6fc; cursor: pointer;
@@ -274,7 +299,7 @@ def write_html(rows: list[dict], path: str) -> None:
   tbody tr:hover { background: #1f242c; }
   tbody tr.row-deprecated { opacity: 0.55; }
   tbody tr.row-deprecated:hover { opacity: 0.85; background: #261f22; }
-  tbody tr.row-deprecated td:nth-child(2) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
+  tbody tr.row-deprecated td:nth-child(1) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
   .tag-deprecated { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #da363322; color: #f85149; border: 1px solid #da363366; text-decoration: none; vertical-align: middle; }
   .tag-promo { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #bb800922; color: #e3b341; border: 1px solid #bb800966; vertical-align: middle; cursor: help; }
   .tag-lic { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
@@ -301,10 +326,11 @@ def write_html(rows: list[dict], path: str) -> None:
   <span class="badge-mistral">Mistral</span>
 </h1>
 <p class="muted">Datos referenciados desde la documentación oficial de <a href="%%PAGE_URL%%" target="_blank">%%PAGE_URL%%</a>.
-<br>Actualizado: %%UPDATED%%. Solo modelos de generación de texto con precio por millón de tokens (entrada y salida).
+<br>Actualizado: %%UPDATED%%. Todos los tipos de modelo (filtra por Tipo). Los de texto traen precio por millón de tokens.
 <br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre, licencia o categoría.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Mistral...">
+  <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
   <span class="muted" id="count"></span>
 </div>
 <div class="table-wrap">
@@ -319,6 +345,7 @@ const HEADERS = %%HEADERS%%;
 let sortKey = 'Modelo';
 let sortAsc = true;
 let filterText = '';
+let typeFilter = '';
 
 const numericCols = ['Entrada ($/M)', 'Salida ($/M)'];
 
@@ -356,6 +383,9 @@ function cellValue(r, k) {
         const num = parseFloat(String(raw).replace(/[^0-9.\\-]/g, '')) || 0;
         return '<span class="numeric" data-num="' + num + '">' + fmtPrice(raw) + '</span>';
     }
+    if (k === 'Tipo' && raw) {
+        return '<span class="tag-type">' + raw + '</span>';
+    }
     return raw || '';
 }
 
@@ -376,6 +406,7 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
+    if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     rows.sort(compareRows);
     document.querySelector('#count').textContent = rows.length + ' modelos encontrados';
     tbody.innerHTML = rows.map(r => '<tr class="' + (r._isDeprecated ? 'row-deprecated' : '') + '">' + HEADERS.map(k => '<td class="' + ((k === 'Notas' || k === 'Categor\u00eda') ? 'wrap' : '') + '">' + cellValue(r, k) + '</td>').join('') + '</tr>').join('');
@@ -403,6 +434,19 @@ document.querySelectorAll('thead th[data-k]').forEach(th => th.addEventListener(
 }));
 
 document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
+
+(function initTypeFilter() {
+  const sel = document.querySelector('#typeFilter');
+  if (!sel) return;
+  const types = [...new Set(DATA.map(r => r['Tipo'] || '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  if (types.length <= 1) sel.style.display = 'none';
+  sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
+})();
 
 render();
 fixSticky();

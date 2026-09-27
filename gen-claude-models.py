@@ -40,6 +40,7 @@ PROMO_RE = re.compile(
 # Columnas finales
 COLS = [
     ("name", "Modelo"),
+    ("type", "Tipo"),
     ("status", "Estado"),
     ("priceEntry", "Entrada ($/M)"),
     ("priceCacheWrite5m", "Escritura Caché 5m ($/M)"),
@@ -51,6 +52,7 @@ COLS = [
 
 HEADER_GROUPS = [
     (None, [("name", "Modelo")]),
+    (None, [("type", "Tipo")]),
     (None, [("status", "Estado")]),
     ("Precio ($/M)", [
         ("priceEntry", "Entrada"),
@@ -213,6 +215,8 @@ def clean_model(m: dict) -> dict:
     row: dict[str, str] = {}
     for key, label in COLS:
         v = m.get(key, '')
+        if key == 'type' and not v:
+            v = 'Texto'
         if v is None:
             v = ''
         row[label] = v
@@ -244,6 +248,11 @@ def write_html(rows: list[dict], path: str) -> None:
   input[type=search] { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; width: 280px; font-size: 13px; outline: none; }
   input[type=search]:focus { border-color: #58a6ff; box-shadow: 0 0 0 3px rgba(56,139,253,0.3); }
+  select#typeFilter { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
+                        background: #161b22; color: #f0f6fc; font-size: 13px; outline: none; }
+  select#typeFilter:focus { border-color: #58a6ff; }
+  .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
+              background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
   table { border-collapse: collapse; width: 100%; font-size: 13px; text-align: left; }
   thead th { position: sticky; background: #21262d; color: #f0f6fc; cursor: pointer;
@@ -256,7 +265,7 @@ def write_html(rows: list[dict], path: str) -> None:
   tbody tr:hover { background: #1f242c; }
   tbody tr.row-deprecated { opacity: 0.55; }
   tbody tr.row-deprecated:hover { opacity: 0.85; background: #261f22; }
-  tbody tr.row-deprecated td:nth-child(2) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
+  tbody tr.row-deprecated td:nth-child(1) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
   .tag-deprecated { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #da363322; color: #f85149; border: 1px solid #da363366; text-decoration: none; vertical-align: middle; }
   .tag-promo { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #bb800922; color: #e3b341; border: 1px solid #bb800966; vertical-align: middle; cursor: help; }
   .tag-status { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
@@ -286,6 +295,7 @@ def write_html(rows: list[dict], path: str) -> None:
 <br>Actualizado: %%UPDATED%%. Haz clic en cualquier columna para ordenar. Filtra libremente por nombre o estado.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Claude...">
+  <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
   <span class="muted" id="count"></span>
 </div>
 <div class="table-wrap">
@@ -300,6 +310,7 @@ const HEADERS = %%HEADERS%%;
 let sortKey = 'Modelo';
 let sortAsc = true;
 let filterText = '';
+let typeFilter = '';
 
 const numericCols = ['Entrada ($/M)', 'Escritura Caché 5m ($/M)', 'Escritura Caché 1h ($/M)', 'Lectura Caché ($/M)', 'Salida ($/M)'];
 
@@ -336,6 +347,9 @@ function cellValue(r, k) {
         const num = parseFloat(String(raw).replace(/[^0-9.\\-]/g, '')) || 0;
         return '<span class="numeric" data-num="' + num + '">' + fmtPrice(raw) + '</span>';
     }
+    if (k === 'Tipo' && raw) {
+        return '<span class="tag-type">' + raw + '</span>';
+    }
     return raw || '';
 }
 
@@ -356,6 +370,7 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
+    if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     rows.sort(compareRows);
     document.querySelector('#count').textContent = rows.length + ' modelos encontrados';
     tbody.innerHTML = rows.map(r => '<tr class="' + (r._isDeprecated ? 'row-deprecated' : '') + '">' + HEADERS.map(k => '<td class="' + (k === 'Notas' ? 'notes' : '') + '">' + cellValue(r, k) + '</td>').join('') + '</tr>').join('');
@@ -383,6 +398,19 @@ document.querySelectorAll('thead th[data-k]').forEach(th => th.addEventListener(
 }));
 
 document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
+
+(function initTypeFilter() {
+  const sel = document.querySelector('#typeFilter');
+  if (!sel) return;
+  const types = [...new Set(DATA.map(r => r['Tipo'] || '').filter(Boolean))].sort((a, b) => a.localeCompare(b, 'es'));
+  for (const t of types) {
+    const opt = document.createElement('option');
+    opt.value = t; opt.textContent = t;
+    sel.appendChild(opt);
+  }
+  if (types.length <= 1) sel.style.display = 'none';
+  sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
+})();
 
 render();
 fixSticky();
