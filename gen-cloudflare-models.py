@@ -403,6 +403,7 @@ document.querySelector('#filter').addEventListener('input', e => { filterText = 
     sel.appendChild(opt);
   }
   if (types.length <= 1) sel.style.display = 'none';
+  if (types.includes('Texto')) { sel.value = 'Texto'; typeFilter = 'Texto'; }
   sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
 })();
 document.querySelector('#onlyFree').addEventListener('change', e => { onlyFree = e.target.checked; render(); });
