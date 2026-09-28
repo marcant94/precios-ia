@@ -68,7 +68,6 @@ def extract_footnotes(page_html: str) -> dict[str, str]:
 COLS = [
     ("name",             "Nombre"),
     ("type",             "Tipo"),
-    ("level",            "Nivel"),
     ("threshold",        "Umbral"),
     ("intelligenceTier", "Inteligencia"),
     ("priceEntry",       "Entrada ($/M)"),
@@ -81,7 +80,6 @@ COLS = [
 HEADER_GROUPS = [
     (None, [("name", "Nombre")]),
     (None, [("type", "Tipo")]),
-    (None, [("level", "Nivel")]),
     (None, [("threshold", "Umbral")]),
     (None, [("intelligenceTier", "Inteligencia")]),
     ("Precio ($/M)", [
@@ -259,6 +257,9 @@ def clean_model(m: dict) -> dict:
     row['_isDeprecated'] = m.get('_isDeprecated', False)
     row['_supersededBy'] = m.get('_supersededBy', '')
     row['_promo'] = m.get('promo', '')
+    # Nivel se mantiene en los datos (lo usa la detección de superados)
+    # para exponerlo como tooltip de Umbral, sin columna propia.
+    row['_nivel'] = m.get('level', '')
     return row
 
 
@@ -394,6 +395,15 @@ function cellValue(r, k) {
             nameHtml += ' <span class="tag-promo" title="' + tip + '">Promo</span>';
         }
         return nameHtml;
+    }
+    if (k === 'Umbral') {
+        if (!raw) return '<span class="muted">-</span>';
+        // El valor de Nivel (redundante con Umbral) se muestra como tooltip.
+        if (r._nivel) {
+            const nivelTip = String(r._nivel).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+            return '<span title="Nivel: ' + nivelTip + '">' + raw + '</span>';
+        }
+        return raw;
     }
     if (k === 'Inteligencia' && raw) {
         return '<span class="tag-intel">' + raw + '</span>';

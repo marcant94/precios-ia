@@ -41,6 +41,18 @@ def fetch_html(url: str, timeout: int = 30) -> str:
     return result.stdout
 
 PAGE_URL = "https://ai.google.dev/gemini-api/docs/pricing?hl=es-419"
+# Página de modelos: contiene el estado de ciclo de vida de cada modelo
+# (acceso limitado, cerrados...) que la página de precios no refleja.
+MODELS_PAGE_URL = "https://ai.google.dev/gemini-api/docs/models?hl=es-419"
+
+# Nota oficial: el acceso a los modelos 2.5 está limitado a usuarios que
+# los usaron de forma activa en el pasado; para proyectos nuevos hay que
+# usar 3.5 Flash-Lite o 3.8 Flash.
+RESTRICTED_NOTE = (
+    "Google limita el acceso a los modelos 2.5 a los usuarios que los usaron de forma "
+    "activa en el pasado (no están obsoletos). Para proyectos nuevos usa Gemini "
+    "3.5 Flash-Lite o Gemini 3.8 Flash."
+)
 
 # Clasificación por tipo a partir del nombre del modelo.
 # Prioridad: música > video > imagen > voz/audio > embeddings > robótica > texto.
@@ -101,6 +113,38 @@ HEADER_GROUPS = [
     (None, [("freeTier", "Gratuito")]),
     (None, [("notes", "Notas")]),
 ]
+
+
+def normalize_display(text: str) -> str:
+    """Normaliza un nombre de modelo para comparar entre páginas (sin acentos)."""
+    t = clean_text(text).lower()
+    t = re.sub(r'\((?:shut down|cerrad[oa])\)', '', t, flags=re.IGNORECASE)
+    t = t.replace('á', 'a').replace('é', 'e').replace('í', 'i').replace('ó', 'o') \
+         .replace('ú', 'u').replace('ü', 'u').replace('ñ', 'n')
+    return re.sub(r'\s+', ' ', t).strip()
+
+
+def load_lifecycle_info() -> dict:
+    """
+    Lee la página de modelos y devuelve:
+      - 'shut_down': nombres normalizados de modelos cerrados/deprecados
+        (p.ej. 'Gemini 2.0 Flash', 'Imagen 4'), marcados con (Shut down)/(cerrado).
+      - 'note': texto oficial de la nota de acceso restringido a los 2.5.
+    """
+    info: dict = {'shut_down': set(), 'note': ''}
+    try:
+        html = fetch_html(MODELS_PAGE_URL)
+    except Exception as e:
+        print('AVISO: no se pudo leer la página de modelos:', e)
+        return info
+    m = re.search(r'limitamos el acceso a los modelos 2\.5[\s\S]{0,600}?3\.8\s*Flash', html)
+    if m:
+        info['note'] = clean_text(m.group(0))
+    for name in re.findall(r'>([^<>]{0,120}?\((?:Shut down|cerrad[oa])\)[^<>]{0,120}?)<', html, re.IGNORECASE):
+        norm = normalize_display(name)
+        if norm:
+            info['shut_down'].add(norm)
+    return info
 
 
 def parse_price_cell(text: str) -> str:
@@ -186,7 +230,7 @@ def extract_section_prices(section_text: str) -> dict:
     return result
 
 
-def parse_google_models(html: str) -> list[dict]:
+def parse_google_models(html: str, lifecycle: dict | None = None) -> list[dict]:
     """Parsea la página HTML de precios de Google Gemini."""
     models = []
 
@@ -243,6 +287,22 @@ def parse_google_models(html: str) -> list[dict]:
             promo_match = PROMO_RE.search(section_content)
             promo = f"Precio promocional temporal: {promo_match.group(0)}"
 
+        # Ciclo de vida (desde la página de modelos):
+        #  - Modelos 2.5: acceso limitado a quienes ya los usaron (dan error
+        #    en proyectos nuevos aunque la página de precios los liste).
+        #  - Modelos cerrados en la página de modelos: (Shut down)/(cerrado).
+        restriccion = ''
+        if lifecycle:
+            norm = normalize_display(name)
+            if norm in lifecycle.get('shut_down', set()):
+                restriccion = 'cerrado'
+            elif re.search(r'\b2\.5\b', name):
+                restriccion = 'limitado'
+
+        note_parts = [promo, extra_note]
+        if restriccion == 'limitado':
+            note_parts.append('Acceso restringido: solo usuarios que ya lo usaron antes')
+
         models.append({
             'name': name,
             'type': google_tipo(name),
@@ -252,7 +312,9 @@ def parse_google_models(html: str) -> list[dict]:
             'priceCacheRead': prices['priceCacheRead'],
             'priceCacheStorage': prices['priceCacheStorage'],
             'freeTier': prices['freeTier'] or 'No',
-            'notes': '; '.join(n for n in (promo, extra_note) if n),
+            'notes': '; '.join(n for n in note_parts if n),
+            '_restriccion': restriccion,
+            '_notaRestriccion': lifecycle.get('note', '') if lifecycle else '',
         })
 
     if not models:
@@ -302,6 +364,8 @@ def clean_model(m: dict) -> dict:
     row['_isDeprecated'] = m.get('_isDeprecated', False)
     row['_supersededBy'] = m.get('_supersededBy', '')
     row['_promo'] = m.get('promo', '')
+    row['_restriccion'] = m.get('_restriccion', '')
+    row['_notaRestriccion'] = m.get('_notaRestriccion', '') or RESTRICTED_NOTE
     return row
 
 
@@ -347,6 +411,8 @@ def write_html(rows: list[dict], path: str) -> None:
   tbody tr.row-deprecated td:nth-child(1) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
   .tag-deprecated { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #da363322; color: #f85149; border: 1px solid #da363366; text-decoration: none; vertical-align: middle; }
   .tag-promo { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #bb800922; color: #e3b341; border: 1px solid #bb800966; vertical-align: middle; cursor: help; }
+  .tag-restricted { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #f0883e22; color: #f0883e; border: 1px solid #f0883e66; vertical-align: middle; cursor: help; }
+  .tag-closed { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #da363322; color: #f85149; border: 1px solid #da363366; vertical-align: middle; cursor: help; }
   .tag-free { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #23863622; color: #3fb950; border: 1px solid #23863666; }
   .tag-paid { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #30363d22; color: #8b949e; border: 1px solid #30363d66; }
   td.numeric, th.numeric { text-align: right; }
@@ -370,7 +436,8 @@ def write_html(rows: list[dict], path: str) -> None:
   <span class="badge-google">Google</span>
 </h1>
 <p class="muted">Datos referenciados desde la documentación oficial de <a href="%%PAGE_URL%%" target="_blank">%%PAGE_URL%%</a>.
-<br>Actualizado: %%UPDATED%%.<br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre o descripción.</p>
+<br>Actualizado: %%UPDATED%%.<br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre o descripción.
+<br>Los modelos con la etiqueta <span class="tag-restricted">Solo uso previo</span> solo están disponibles para usuarios que ya los usaron antes (dan error en proyectos nuevos), según la <a href="%%MODELS_PAGE_URL%%" target="_blank">página de modelos</a>.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Gemini...">
   <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
@@ -408,6 +475,11 @@ function cellValue(r, k) {
         if (r._promo) {
             const tip = String(r._promo).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
             nameHtml += ' <span class="tag-promo" title="' + tip + '">Promo</span>';
+        }
+        if (r._restriccion) {
+            const tip = String(r._notaRestriccion || '').replace(/&/g, '&amp;').replace(/"/g, '&quot;');
+            const label = r._restriccion === 'cerrado' ? 'Cerrado' : 'Solo uso previo';
+            nameHtml += ' <span class="' + (r._restriccion === 'cerrado' ? 'tag-closed' : 'tag-restricted') + '" title="' + tip + '">' + label + '</span>';
         }
         return nameHtml;
     }
@@ -503,6 +575,7 @@ window.addEventListener('resize', fixSticky);
     html = html.replace('%%HEADER_CELLS%%', header_cells)
     html = html.replace('%%PAGE_URL%%', PAGE_URL)
     html = stamp_updated(html)
+    html = html.replace('%%MODELS_PAGE_URL%%', MODELS_PAGE_URL)
     html = html.replace('%%DATA%%', data)
     html = html.replace('%%HEADERS%%', json.dumps(headers, ensure_ascii=False))
     with open(path, "w", encoding="utf-8") as f:
@@ -516,7 +589,8 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        models = parse_google_models(fetch_html(PAGE_URL))
+        lifecycle = load_lifecycle_info()
+        models = parse_google_models(fetch_html(PAGE_URL), lifecycle)
     except Exception as e:
         print('ERROR:', e)
         return 1

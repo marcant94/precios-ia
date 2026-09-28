@@ -41,6 +41,7 @@ BANNER_URLS = [
 # Columnas finales (sin proveedor: heurístico no dinámico, se elimina)
 COLS = [
     ("name",            "Modelo"),
+    ("plan",            "Plan"),
     ("type",            "Tipo"),
     ("condition",       "Condición / Umbral"),
     ("priceEntry",      "Entrada ($/M)"),
@@ -55,7 +56,9 @@ COLS = [
     ("retention",       "Retención"),
 ]
 
-HEADER_GROUPS = [    (None, [("name", "Modelo")]),
+HEADER_GROUPS = [
+    (None, [("name", "Modelo")]),
+    (None, [("plan", "Plan")]),
     (None, [("type", "Tipo")]),
     (None, [("condition", "Condición")]),
     ("Precio ($/M)", [
@@ -98,20 +101,45 @@ def fetch_promo_banners() -> list[str]:
     return banners
 
 
+def detect_plan(html: str, table_start: int) -> str:
+    """
+    Detecta el plan (Go / Go Plus) de la tabla que empieza en table_start.
+
+    Las tablas de precios y de peticiones están dentro de pestañas con dos
+    paneles: <a role="tab" href="#tab-panel-N"> Go </a> y Go Plus. El tablist
+    declara ambas pestañas antes del primer panel, así que mapeamos cada
+    id de panel a su etiqueta y usamos el último panel abierto antes de la tabla.
+    """
+    tabs = {
+        m.group(1): clean_text(m.group(2))
+        for m in re.finditer(r'<a[^>]*role="tab"[^>]*href="#(tab-panel-\d+)"[^>]*>([\s\S]*?)</a>', html)
+    }
+    prev = html[:table_start]
+    panels = re.findall(r'<div id="(tab-panel-\d+)"', prev)
+    if panels and panels[-1] in tabs:
+        label = tabs[panels[-1]].lower()
+        if label.startswith('go plus'):
+            return 'Go Plus'
+        if label.startswith('go'):
+            return 'Go'
+    return 'Go'
+
+
 def load_opencode_go_models() -> list[dict]:
     """Descarga y parsea las tablas de modelos y precios de OpenCode Go."""
     html = fetch_html(PAGE_URL)
 
-    tables = re.findall(r'<table[\s\S]*?<\/table>', html, re.IGNORECASE)
+    tables = [(m.start(), m.group(0)) for m in re.finditer(r'<table[\s\S]*?<\/table>', html, re.IGNORECASE)]
     if not tables:
         raise RuntimeError(f"No se encontraron tablas en {PAGE_URL}")
 
-    requests_map: dict[str, dict] = {}
+    requests_map: dict[tuple[str, str], dict] = {}
     price_rows: list[dict] = []
     endpoints_map: dict[str, str] = {}
     privacy_map: dict[str, str] = {}
 
-    for table in tables:
+    for table_start, table in tables:
+        plan = detect_plan(html, table_start)
         ths = re.findall(r'<th[\s\S]*?>([\s\S]*?)<\/th>', table, re.IGNORECASE)
         headers = [clean_text(x).lower() for x in ths]
         rows = re.findall(r'<tr[\s\S]*?>([\s\S]*?)<\/tr>', table, re.IGNORECASE)
@@ -122,7 +150,7 @@ def load_opencode_go_models() -> list[dict]:
             for r in rows[1:]:
                 tds = [clean_text(x) for x in re.findall(r'<td[\s\S]*?>([\s\S]*?)<\/td>', r, re.IGNORECASE)]
                 if len(tds) >= 4:
-                    requests_map[normalize_name(tds[0])] = {
+                    requests_map[(plan, normalize_name(tds[0]))] = {
                         'req5h': tds[1],
                         'reqWeekly': tds[2],
                         'reqMonthly': tds[3],
@@ -138,6 +166,7 @@ def load_opencode_go_models() -> list[dict]:
                         cond = m_cond.group(1).strip()
                     base_name = re.sub(r'\s*\(.*?\)', '', full_name).strip()
                     price_rows.append({
+                        'plan': plan,
                         'raw_full_name': full_name,
                         'name': base_name,
                         'condition': cond,
@@ -161,8 +190,9 @@ def load_opencode_go_models() -> list[dict]:
     results: list[dict] = []
     for pr in price_rows:
         norm = normalize_name(pr['name'])
-        req_info = requests_map.get(norm, {})
+        req_info = requests_map.get((pr['plan'], norm), {})
         results.append({
+            'plan': pr['plan'],
             'name': pr['name'],
             'condition': pr['condition'],
             'priceEntry': pr['priceEntry'],
@@ -179,10 +209,11 @@ def load_opencode_go_models() -> list[dict]:
             '_supersededBy': '',
         })
 
-    # Detección de modelos superados (misma familia + condición, versión superior, coste <=)
+    # Detección de modelos superados (misma familia + plan + condición, versión superior, coste <=)
     direct_superseded: dict[int, int] = {}
     for i, r1 in enumerate(results):
         f1, v1 = parse_family_version(r1['name'])
+        p1 = r1['plan']
         c1 = (r1['condition'] or '').strip()
         e1 = parse_cost(r1['priceEntry'])
         x1 = parse_cost(r1['priceExit'])
@@ -197,7 +228,7 @@ def load_opencode_go_models() -> list[dict]:
                 continue
             f2, v2 = parse_family_version(r2['name'])
             c2 = (r2['condition'] or '').strip()
-            if f1 == f2 and c1 == c2 and v2 > best_ver:
+            if f1 == f2 and c1 == c2 and p1 == r2['plan'] and v2 > best_ver:
                 e2 = parse_cost(r2['priceEntry'])
                 x2 = parse_cost(r2['priceExit'])
                 cr2 = parse_cost(r2['priceCacheRead'])
@@ -225,10 +256,10 @@ def load_opencode_go_models() -> list[dict]:
             for size in range(1, min(7, len(words) + 1))
             for i in range(len(words) - size + 1)
         }
-        for r in results:
-            if not r.get('_promo') and normalize_name(r['name']) in banner_names:
-                r['_promo'] = banner
-                print(f"Promo detectada para {r['name']}: {banner}")
+    for r in results:
+        if not r.get('_promo') and normalize_name(r['name']) in banner_names:
+            r['_promo'] = banner
+            print(f"Promo detectada para {r['plan']}: {r['name']}: {banner}")
 
     if not results:
         raise RuntimeError("No se pudieron parsear filas de precios de OpenCode Go")
@@ -264,7 +295,7 @@ def write_html(rows: list[dict], path: str) -> None:
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Modelos y Precios de OpenCode Go ($10/mes)</title>
+<title>Modelos y Precios de OpenCode Go y Go Plus</title>
 <style>
   :root { color-scheme: dark light; }
   * { box-sizing: border-box; }
@@ -272,7 +303,7 @@ def write_html(rows: list[dict], path: str) -> None:
          margin: 0; padding: 24px; background-color: #0d1117; color: #c9d1d9; }
   h1 { font-size: 1.5rem; margin: 0 0 6px; color: #f0f6fc; display: flex; align-items: center; gap: 10px; }
   .badge-go { background: #1f6feb; color: #ffffff; font-size: 11px; padding: 3px 8px; border-radius: 12px; text-transform: uppercase; font-weight: bold; }
-  .badge-price { background: #238636; color: #ffffff; font-size: 11px; padding: 3px 8px; border-radius: 12px; font-weight: bold; }
+  .badge-plus { background: #8957e5; color: #ffffff; font-size: 11px; padding: 3px 8px; border-radius: 12px; text-transform: uppercase; font-weight: bold; }
   .toolbar { display: flex; gap: 12px; align-items: center; margin: 16px 0; flex-wrap: wrap; }
   input[type=search] { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; width: 280px; font-size: 13px; outline: none; }
@@ -280,6 +311,8 @@ def write_html(rows: list[dict], path: str) -> None:
   select#typeFilter { padding: 8px 12px; border: 1px solid #30363d; border-radius: 6px;
                         background: #161b22; color: #f0f6fc; font-size: 13px; outline: none; }
   select#typeFilter:focus { border-color: #58a6ff; }
+  .tag-plan-go { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb66; white-space: nowrap; }
+  .tag-plan-plus { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #8957e522; color: #d2a8ff; border: 1px solid #8957e566; white-space: nowrap; }
   .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
               background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
@@ -314,6 +347,8 @@ def write_html(rows: list[dict], path: str) -> None:
                           background: #f0f6fc; border-radius: 50%; transition: transform .2s; }
   .switch input:checked + .track { background: #238636; }
   .switch input:checked + .track::after { transform: translateX(18px); }
+  .switch.disabled { opacity: .45; cursor: not-allowed; }
+  .switch.disabled .track { cursor: not-allowed; }
 </style>
 </head>
 <body>
@@ -323,18 +358,19 @@ def write_html(rows: list[dict], path: str) -> None:
     <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
   </svg>
   Modelos y Precios de OpenCode Go
-  <span class="badge-go">OpenCode Go</span>
-  <span class="badge-price">$10 / mes (hasta $60 en uso)</span>
+  <span class="badge-go">Go $10/mes</span>
+  <span class="badge-plus">Go Plus $40/mes</span>
 </h1>
 <p class="muted">Datos referenciados desde la documentación oficial de <a href="%%PAGE_URL%%" target="_blank">%%PAGE_URL%%</a>.
-<br>Actualizado: %%UPDATED%%.<br>Incluye límites de uso (5h: $12, semanal: $30, mensual: $60) y estimación de peticiones.</p>
+<br>Actualizado: %%UPDATED%%. Dos planes: <strong>Go</strong> ($10/mes) y <strong>Go Plus</strong> ($40/mes), con los mismos precios de tokens y límites de uso distintos (5h: 20%, semanal: 50%, mensual: 100% del límite mensual incluido de cada modelo).</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de OpenCode Go...">
+  <select id="planFilter" title="Filtrar por plan"><option value="">Go y Go Plus</option><option value="Go">Go</option><option value="Go Plus">Go Plus</option></select>
   <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
-  <label class="switch" title="Mostrar solo modelos con límite mensual ≥ $60">
+  <label class="switch" title="Mostrar solo modelos con límite mensual ≥ $60 (solo aplica al plan Go)">
     <input type="checkbox" id="budgetSwitch">
     <span class="track"></span>
-    <span style="font-size:13px">≥ $60/mes</span>
+    <span style="font-size:13px">≥ $60/mes (Go)</span>
   </label>
   <span class="muted" id="count"></span>
 </div>
@@ -351,6 +387,7 @@ let sortKey = 'Modelo';
 let sortAsc = true;
 let filterText = '';
 let typeFilter = '';
+let planFilter = '';
 let budgetFilter = false;
 
 const numericCols = [
@@ -376,6 +413,9 @@ function cellValue(r, k) {
             nameHtml += ' <span class="tag-promo" title="' + tip + '">Promo</span>';
         }
         return nameHtml;
+    }
+    if (k === 'Plan') {
+        return raw ? '<span class="tag-plan-' + (raw === 'Go Plus' ? 'plus' : 'go') + '">' + raw + '</span>' : '';
     }
     if (k === 'Límite Mensual Incluido' && raw) {
         return '<span class="tag-budget">' + raw + '</span>';
@@ -412,10 +452,14 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
+    if (planFilter) rows = rows.filter(r => (r['Plan'] || '') === planFilter);
     if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     if (budgetFilter) {
         rows = rows.filter(r => {
             const raw = r['Límite Mensual Incluido'] || '';
+            // Los modelos gratuitos ("Ilimitado por tiempo limitado", "Gratis")
+            // no se excluyen: su límite no es acotado.
+            if (/ilimitado|gratis/i.test(raw)) return true;
             const num = parseFloat(String(raw).replace(/,/g, '').replace(/[^0-9.]/g, '')) || 0;
             return num >= 60;
         });
@@ -462,8 +506,27 @@ document.querySelector('#filter').addEventListener('input', e => { filterText = 
   sel.addEventListener('change', e => { typeFilter = e.target.value; render(); });
 })();
 
-document.querySelector('#budgetSwitch').addEventListener('change', e => { budgetFilter = e.target.checked; render(); });
+const planSel = document.querySelector('#planFilter');
+const budgetSwitchEl = document.querySelector('#budgetSwitch');
+const budgetLabelEl = budgetSwitchEl.closest('label');
 
+// El filtro de ≥ $60/mes solo tiene sentido en el plan Go: para Go Plus o
+// "ambos" se deshabilita y no filtra nada.
+function updateBudgetSwitch() {
+  const enabled = planFilter === 'Go';
+  budgetSwitchEl.disabled = !enabled;
+  budgetLabelEl.classList.toggle('disabled', !enabled);
+  if (!enabled) {
+    budgetSwitchEl.checked = false;
+    budgetFilter = false;
+  }
+}
+
+planSel.addEventListener('change', e => { planFilter = e.target.value; updateBudgetSwitch(); render(); });
+
+budgetSwitchEl.addEventListener('change', e => { budgetFilter = e.target.checked && planFilter === 'Go'; render(); });
+
+updateBudgetSwitch();
 render();
 fixSticky();
 window.addEventListener('resize', fixSticky);
