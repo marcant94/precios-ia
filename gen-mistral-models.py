@@ -30,6 +30,7 @@ COLS = [
     ("name", "Modelo"),
     ("type", "Tipo"),
     ("license", "Licencia"),
+    ("freePlan", "Plan"),
     ("category", "Categoría"),
     ("priceEntry", "Entrada ($/M)"),
     ("priceExit", "Salida ($/M)"),
@@ -40,6 +41,7 @@ HEADER_GROUPS = [
     (None, [("name", "Modelo")]),
     (None, [("type", "Tipo")]),
     (None, [("license", "Licencia")]),
+    (None, [("freePlan", "Plan")]),
     (None, [("category", "Categoría")]),
     ("Precio ($/M tokens)", [
         ("priceEntry", "Entrada"),
@@ -132,18 +134,28 @@ def parse_card(title: str, seg: str) -> dict | None:
     description = descs[0] if descs else ""
 
     # Licencia: badges eyebrow SIN data-category-slug (Open/Premier/Labs/New/...)
+    # Se prefiere la insignia con pinta de licencia; si no hay, la primera.
     license_ = ""
+    fallback_ = ""
     for b in BADGE_RE.findall(seg):
         if "data-category-slug" in b:
             continue
         txt = clean_text(b)
         if not txt:
             continue
-        if not license_:
-            license_ = txt
-        if txt.lower() in ("open", "premier", "labs"):
+        if not fallback_:
+            fallback_ = txt
+        low = txt.lower()
+        if re.search(r"open|premier|labs|apache|mit\b|mit |cc[ -]?by|bsd|mogul|mrl", low):
             license_ = txt
             break
+    if not license_:
+        license_ = fallback_
+
+    # Licencias de pesos abiertos usables con cuenta gratuita.
+    is_open_license = bool(re.search(
+        r"\bopen\b|apache|mit\b|mit |cc[ -]?by|bsd|\blabs\b", license_, re.IGNORECASE
+    ))
 
     if "third-party" in cats and license_.lower() not in ("open", "premier", "labs"):
         license_ = "Terceros"
@@ -179,11 +191,26 @@ def parse_card(title: str, seg: str) -> dict | None:
         else:
             extra_prices.append(f"{label}: {amount}")
 
+    # Plan gratuito: etiqueta "Free" en la tarjeta (precio Free sin data-prices)
+    # o licencia de pesos abiertos / experimental (Open, Apache, MIT, CC-BY, Labs).
+    # Los Labs llevan además marca temporal (acceso por periodo limitado).
+    has_free_label = bool(re.search(r'>\s*Free\s*<', seg, re.IGNORECASE))
+    has_limited = bool(re.search(r'limited\s+period|limited\s+time|highly\s+accessible', seg, re.IGNORECASE))
+    is_labs = "labs" in license_.lower()
+    is_free = has_free_label or is_open_license or is_labs
+    is_temporal = has_limited or is_labs
+
     tipo = mistral_tipo(cats, name, [p[0] for p in prices])
+    # Los modelos con etiqueta "Free" entran aunque no traigan precio
+    # (endpoint gratuito sin data-prices).
+    if has_free_label and not prices:
+        entry = "Gratis"
     # Texto exige entrada+salida por token; el resto muestra su precio
     # específico (OCR por páginas, voz por min/carácter, etc.).
     if tipo == "Texto":
-        if not entry or not exit_:
+        if entry == "Gratis":
+            pass
+        elif not entry or not exit_:
             return None
     elif not entry and not exit_:
         if not prices:
@@ -202,10 +229,13 @@ def parse_card(title: str, seg: str) -> dict | None:
 
     category = ", ".join(cats) if cats else ""
 
+    if is_free and not entry and not exit_ and has_free_label:
+        entry = "Gratis"
     return {
         "name": name,
         "type": tipo,
         "license": license_,
+        "freePlan": "Gratuito" if is_free else "Suscripción",
         "category": category,
         "priceEntry": entry,
         "priceExit": exit_,
@@ -213,6 +243,9 @@ def parse_card(title: str, seg: str) -> dict | None:
         "_isDeprecated": False,
         "_supersededBy": "",
         "_promo": "",
+        "_isFree": is_free,
+        "_isTemporal": is_temporal,
+        "_requiresPaid": not is_free,
     }
 
 
@@ -257,6 +290,9 @@ def clean_model(m: dict) -> dict:
     row["_isDeprecated"] = m.get("_isDeprecated", False)
     row["_supersededBy"] = m.get("_supersededBy", "")
     row["_promo"] = m.get("_promo", "")
+    row["_isFree"] = m.get("_isFree", False)
+    row["_isTemporal"] = m.get("_isTemporal", False)
+    row["_requiresPaid"] = m.get("_requiresPaid", False)
     return row
 
 
@@ -302,6 +338,10 @@ def write_html(rows: list[dict], path: str) -> None:
   tbody tr.row-deprecated td:nth-child(1) { text-decoration: line-through; text-decoration-color: #f85149; text-decoration-thickness: 2px; }
   .tag-deprecated { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #da363322; color: #f85149; border: 1px solid #da363366; text-decoration: none; vertical-align: middle; }
   .tag-promo { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #bb800922; color: #e3b341; border: 1px solid #bb800966; vertical-align: middle; cursor: help; }
+  tbody tr.row-paid td:nth-child(1) { color: #e3b341; }
+  .tag-temporal { display: inline-block; margin-left: 6px; padding: 1px 5px; border-radius: 4px; font-size: 10px; font-weight: 600; background: #9e6a0322; color: #e3b341; border: 1px solid #9e6a0366; vertical-align: middle; }
+  .tag-plan-free { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #23863622; color: #3fb950; border: 1px solid #23863666; }
+  .tag-plan-requires { display: inline-block; padding: 1px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #9e6a0322; color: #e3b341; border: 1px solid #9e6a0366; }
   .tag-lic { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; }
   .lic-open { background: #ff700022; color: #ffa657; border: 1px solid #ff700066; }
   .lic-premier { background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb66; }
@@ -326,11 +366,12 @@ def write_html(rows: list[dict], path: str) -> None:
   <span class="badge-mistral">Mistral</span>
 </h1>
 <p class="muted">Datos referenciados desde la documentación oficial de <a href="%%PAGE_URL%%" target="_blank">%%PAGE_URL%%</a>.
-<br>Actualizado: %%UPDATED%%. Todos los tipos de modelo (filtra por Tipo). Los de texto traen precio por millón de tokens.
+<br>Actualizado: %%UPDATED%%. Todos los tipos de modelo (filtra por Tipo). Los de texto traen precio por millón de tokens. Plan Gratuito: modelos Open/Labs o con precio Free en la web oficial.
 <br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre, licencia o categoría.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Mistral...">
   <select id="typeFilter" title="Filtrar por tipo de modelo"><option value="">Todos los tipos</option></select>
+  <label class="muted" style="font-size:13px"><input type="checkbox" id="onlyFree" style="vertical-align:middle"> Solo gratuitos</label>
   <span class="muted" id="count"></span>
 </div>
 <div class="table-wrap">
@@ -346,6 +387,7 @@ let sortKey = 'Modelo';
 let sortAsc = true;
 let filterText = '';
 let typeFilter = '';
+let onlyFree = false;
 
 const numericCols = ['Entrada ($/M)', 'Salida ($/M)'];
 
@@ -366,7 +408,13 @@ function cellValue(r, k) {
             const tip = String(r._promo).replace(/&/g, '&amp;').replace(/"/g, '&quot;');
             nameHtml += ' <span class="tag-promo" title="' + tip + '">Promo</span>';
         }
+        if (r._isTemporal) {
+            nameHtml += ' <span class="tag-temporal" title="Acceso gratuito por periodo limitado">Temporal</span>';
+        }
         return nameHtml;
+    }
+    if (k === 'Plan') {
+        return raw === 'Gratuito' ? '<span class="tag-plan-free">Gratuito</span>' : '<span class="tag-plan-requires" title="Requiere suscripción o pago por uso">Suscripci\u00f3n</span>';
     }
     if (k === 'Licencia') {
         if (!raw) return '<span class="muted">-</span>';
@@ -407,9 +455,10 @@ function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
     if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
+    if (onlyFree) rows = rows.filter(r => !r._requiresPaid);
     rows.sort(compareRows);
     document.querySelector('#count').textContent = rows.length + ' modelos encontrados';
-    tbody.innerHTML = rows.map(r => '<tr class="' + (r._isDeprecated ? 'row-deprecated' : '') + '">' + HEADERS.map(k => '<td class="' + ((k === 'Notas' || k === 'Categor\u00eda') ? 'wrap' : '') + '">' + cellValue(r, k) + '</td>').join('') + '</tr>').join('');
+    tbody.innerHTML = rows.map(r => '<tr class="' + (r._isDeprecated ? 'row-deprecated' : '') + (r._requiresPaid ? ' row-paid' : '') + '">' + HEADERS.map(k => '<td class="' + ((k === 'Notas' || k === 'Categor\u00eda') ? 'wrap' : '') + '">' + cellValue(r, k) + '</td>').join('') + '</tr>').join('');
     document.querySelectorAll('thead th[data-k]').forEach(th => {
         th.querySelector('.arrow').textContent = th.dataset.k === sortKey ? (sortAsc ? '\\u25b2' : '\\u25bc') : '';
         if (numericCols.includes(th.dataset.k)) th.classList.add('numeric'); else th.classList.remove('numeric');
@@ -434,6 +483,7 @@ document.querySelectorAll('thead th[data-k]').forEach(th => th.addEventListener(
 }));
 
 document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
+document.querySelector('#onlyFree').addEventListener('change', e => { onlyFree = e.target.checked; render(); });
 
 (function initTypeFilter() {
   const sel = document.querySelector('#typeFilter');
