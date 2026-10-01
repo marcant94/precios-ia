@@ -152,10 +152,6 @@ def parse_card(title: str, seg: str) -> dict | None:
     if not license_:
         license_ = fallback_
 
-    # Licencias de pesos abiertos usables con cuenta gratuita.
-    is_open_license = bool(re.search(
-        r"\bopen\b|apache|mit\b|mit |cc[ -]?by|bsd|\blabs\b", license_, re.IGNORECASE
-    ))
 
     if "third-party" in cats and license_.lower() not in ("open", "premier", "labs"):
         license_ = "Terceros"
@@ -191,13 +187,17 @@ def parse_card(title: str, seg: str) -> dict | None:
         else:
             extra_prices.append(f"{label}: {amount}")
 
-    # Plan gratuito: etiqueta "Free" en la tarjeta (precio Free sin data-prices)
-    # o licencia de pesos abiertos / experimental (Open, Apache, MIT, CC-BY, Labs).
+    # Plan gratuito (verificado con cuenta gratuita sin suscripción):
+    # - etiqueta "Free" en la tarjeta de precios, o
+    # - insignia de licencia exactamente "Open" (Ministral).
+    # Apache/MIT/CC-BY hablan de los pesos, no del acceso por API:
+    # Small/Medium/Large salen en la web de Vibe pero la API exige pago.
     # Los Labs llevan además marca temporal (acceso por periodo limitado).
     has_free_label = bool(re.search(r'>\s*Free\s*<', seg, re.IGNORECASE))
     has_limited = bool(re.search(r'limited\s+period|limited\s+time|highly\s+accessible', seg, re.IGNORECASE))
     is_labs = "labs" in license_.lower()
-    is_free = has_free_label or is_open_license or is_labs
+    is_open_badge = license_.strip().lower() == "open"
+    is_free = has_free_label or is_open_badge
     is_temporal = has_limited or is_labs
 
     tipo = mistral_tipo(cats, name, [p[0] for p in prices])
@@ -366,7 +366,7 @@ def write_html(rows: list[dict], path: str) -> None:
   <span class="badge-mistral">Mistral</span>
 </h1>
 <p class="muted">Datos referenciados desde la documentación oficial de <a href="%%PAGE_URL%%" target="_blank">%%PAGE_URL%%</a>.
-<br>Actualizado: %%UPDATED%%. Todos los tipos de modelo (filtra por Tipo). Los de texto traen precio por millón de tokens. Plan Gratuito: modelos Open/Labs o con precio Free en la web oficial.
+<br>Actualizado: %%UPDATED%%. Todos los tipos de modelo (filtra por Tipo). Los de texto traen precio por millón de tokens. Plan Gratuito: modelos con precio Free o licencia Open en la web oficial (Apache/MIT se refiere a los pesos: Small/Medium/Large exigen suscripción en la API).
 <br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre, licencia o categoría.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Mistral...">
