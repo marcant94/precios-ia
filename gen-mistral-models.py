@@ -249,11 +249,115 @@ def parse_card(title: str, seg: str) -> dict | None:
     }
 
 
+def parse_docs_table(html: str) -> list[dict]:
+    """Parsea el formato actual de docs.mistral.ai/inference/pricing.
+
+    Tablas con columnas Model | Input | Cached input | Output, precedidas
+    por un encabezado h2/h3 de sección (Flagship/Specialized/Third-party/Code).
+    """
+    sections = [
+        (m.start(), re.sub(r"<.*?>", " ", m.group(1)))
+        for m in re.finditer(r"<h[23][^>]*>(.*?)</h[23]>", html, re.S)
+    ]
+    models: list[dict] = []
+    for rm in re.finditer(r'<tr data-slot="table-row"[^>]*>(.*?)</tr>', html, re.S):
+        cells = re.findall(r"<td[^>]*>(.*?)</td>", rm.group(1), re.S)
+        if len(cells) < 4:
+            continue
+        name = clean_text(cells[0]).replace(" ↗", "").strip()
+        if not name:
+            continue
+        entry = clean_text(cells[1])
+        cached = clean_text(cells[2])
+        exit_ = clean_text(cells[3])
+        if exit_ in ("—", "-", ""):
+            exit_ = ""
+        sec = ""
+        for pos, title in sections:
+            if pos < rm.start():
+                sec = re.sub(r"\s+", " ", title).strip()
+            else:
+                break
+        slow = sec.lower()
+        if "code" in slow:
+            category, tipo = "code", "Texto"
+        elif "third" in slow:
+            category, tipo = "third-party", "Texto"
+        elif "special" in slow:
+            low = name.lower()
+            if "ocr" in low:
+                category, tipo = "ocr", "OCR / Documento"
+            elif "transcribe" in low:
+                category, tipo = "transcription", "Transcripción"
+            elif "tts" in low:
+                category, tipo = "voice", "Voz"
+            elif "moderation" in low:
+                category, tipo = "classifier-apis", "Clasificación"
+            else:
+                category, tipo = "specialized", "Texto"
+        else:
+            category, tipo = "flagship", "Texto"
+        is_free = entry.lower() == "free"
+        low_name = name.lower()
+        # Verificado con cuenta gratuita sin suscripción: los Ministral
+        # funcionan en el tier gratuito aunque la tabla muestre precio.
+        if low_name.startswith("ministral"):
+            is_free = True
+        models.append({
+            "name": name,
+            "type": tipo,
+            "license": "Terceros" if category == "third-party" else "",
+            "freePlan": "Gratuito" if is_free else "Suscripción",
+            "category": category,
+            "priceEntry": "Gratis" if is_free else entry,
+            "priceExit": "Gratis" if is_free else exit_,
+            "notes": f"{cached} caché" if cached and cached not in ("—", "-") else "",
+            "_isDeprecated": False,
+            "_supersededBy": "",
+            "_promo": "",
+            "_isFree": is_free,
+            "_isTemporal": False,
+            "_requiresPaid": not is_free,
+        })
+    return models
+
+
+def ensure_leanstral(models: list[dict]) -> list[dict]:
+    """Añade Leanstral 1.5 si no viene en la fuente.
+
+    Gratuito total (Apache 2.0) pero ausente de la tabla de precios;
+    obsoleto desde el 29/9/2026.
+    """
+    if not any(m["name"].lower() == "leanstral 1.5" for m in models):
+        models.append({
+            "name": "Leanstral 1.5",
+            "type": "Texto",
+            "license": "Apache 2.0",
+            "freePlan": "Gratuito",
+            "category": "labs",
+            "priceEntry": "Gratis",
+            "priceExit": "Gratis",
+            "notes": "Obsoleto desde 29/9/2026",
+            "_isDeprecated": True,
+            "_supersededBy": "Leanstral",
+            "_promo": "",
+            "_isFree": True,
+            "_isTemporal": False,
+            "_requiresPaid": False,
+        })
+    return models
+
+
 def load_mistral_models() -> list[dict]:
     html = fetch_html(PAGE_URL)
     titles = list(TITLE_RE.finditer(html))
     if not titles:
-        raise RuntimeError(f"No se encontraron tarjetas parseables en {PAGE_URL}")
+        models = parse_docs_table(html)
+        if not models:
+            raise RuntimeError(f"No se encontraron tarjetas parseables en {PAGE_URL}")
+        models = ensure_leanstral(models)
+        print(f"Obtenidos {len(models)} modelos desde la web: {PAGE_URL}")
+        return models
 
     by_name: dict[str, dict] = {}
     for idx, tm in enumerate(titles):
@@ -274,6 +378,11 @@ def load_mistral_models() -> list[dict]:
                 by_name[key] = card
 
     models = list(by_name.values())
+    if not models:
+        raise RuntimeError(f"No se encontraron tarjetas parseables en {PAGE_URL}")
+    # Leanstral 1.5: gratuito total (Apache 2.0) pero no sale en la tabla
+    # de precios; se añade manualmente. Obsoleto desde el 29/9/2026.
+    models = ensure_leanstral(list(by_name.values()))
     if not models:
         raise RuntimeError(f"No se encontraron tarjetas parseables en {PAGE_URL}")
     print(f"Obtenidos {len(models)} modelos desde la web: {PAGE_URL}")
@@ -366,7 +475,7 @@ def write_html(rows: list[dict], path: str) -> None:
   <span class="badge-mistral">Mistral</span>
 </h1>
 <p class="muted">Datos referenciados desde la documentación oficial de <a href="%%PAGE_URL%%" target="_blank">%%PAGE_URL%%</a>.
-<br>Actualizado: %%UPDATED%%. Todos los tipos de modelo (filtra por Tipo). Los de texto traen precio por millón de tokens. Plan Gratuito: modelos con precio Free o licencia Open en la web oficial (Apache/MIT se refiere a los pesos: Small/Medium/Large exigen suscripción en la API).
+<br>Actualizado: %%UPDATED%%. Todos los tipos de modelo (filtra por Tipo). Los de texto traen precio por millón de tokens. Plan Gratuito: modelos con precio Free, Ministral (verificado con cuenta gratuita) o Leanstral 1.5 (Apache 2.0, obsoleto desde 29/9/2026).
 <br>Haz clic en cualquier columna para ordenar. Filtra libremente por nombre, licencia o categoría.</p>
 <div class="toolbar">
   <input type="search" id="filter" placeholder="Filtrar modelos de Mistral...">

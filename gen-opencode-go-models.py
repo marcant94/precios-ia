@@ -245,21 +245,46 @@ def load_opencode_go_models() -> list[dict]:
 
     # Promos: los banners de las landings anuncian ofertas tipo 'X gets 2x
     # usage limits for a limited time'. Marcar los modelos que aparecen en ellos.
+    banner_promos: dict[str, str] = {}
     for banner in fetch_promo_banners():
         # Comparar el nombre del modelo (normalizado) contra todos los
         # n-gramas de palabras consecutivas del banner. Así 'GLM-5.3' no
         # matchea dentro de 'GLM-5.3-Flash' (glm53 != glm53flash), pero
         # nombres de varias palabras como 'Grok 4.6' (grok46) sí matchean.
         words = banner.split()
-        banner_names = {
-            normalize_name(' '.join(words[i:i + size]))
-            for size in range(1, min(7, len(words) + 1))
-            for i in range(len(words) - size + 1)
-        }
+        for size in range(1, min(7, len(words) + 1)):
+            for i in range(len(words) - size + 1):
+                banner_promos.setdefault(normalize_name(' '.join(words[i:i + size])), banner)
     for r in results:
-        if not r.get('_promo') and normalize_name(r['name']) in banner_names:
-            r['_promo'] = banner
-            print(f"Promo detectada para {r['plan']}: {r['name']}: {banner}")
+        norm = normalize_name(r['name'])
+        if not r.get('_promo') and norm in banner_promos:
+            r['_promo'] = banner_promos[norm]
+            print(f"Promo detectada para {r['plan']}: {r['name']}: {banner_promos[norm]}")
+
+    # Normalizar "Ilimitado por tiempo limitado" -> "Ilimitado" (la
+    # temporalidad se muestra como etiqueta en la columna Plan).
+    for r in results:
+        if re.search(r'ilimitado por tiempo limitado', r.get('monthlyBudget') or '', re.IGNORECASE):
+            r['monthlyBudget'] = 'Ilimitado'
+            r['_temporal'] = True
+        else:
+            r['_temporal'] = False
+
+    # Unificar filas idénticas salvo el plan (p.ej. LongCat Free en Go y
+    # Go Plus) en una sola con plan "Go + Go Plus".
+    merged: list[dict] = []
+    seen: dict[tuple, int] = {}
+    for r in results:
+        key = tuple(
+            [r.get(k, '') for k, _ in COLS if k != 'plan']
+            + [r.get('_promo', ''), r.get('_isDeprecated', False), r.get('_supersededBy', '')]
+        )
+        if key in seen:
+            merged[seen[key]]['plan'] = 'Go + Go Plus'
+        else:
+            seen[key] = len(merged)
+            merged.append(r)
+    results = merged
 
     if not results:
         raise RuntimeError("No se pudieron parsear filas de precios de OpenCode Go")
@@ -282,6 +307,7 @@ def clean_row(m: dict) -> dict:
     row['_isDeprecated'] = m.get('_isDeprecated', False)
     row['_supersededBy'] = m.get('_supersededBy', '')
     row['_promo'] = m.get('_promo', '')
+    row['_temporal'] = m.get('_temporal', False)
     return row
 
 
@@ -313,6 +339,7 @@ def write_html(rows: list[dict], path: str) -> None:
   select#typeFilter:focus { border-color: #58a6ff; }
   .tag-plan-go { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #1f6feb22; color: #58a6ff; border: 1px solid #1f6feb66; white-space: nowrap; }
   .tag-plan-plus { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #8957e522; color: #d2a8ff; border: 1px solid #8957e566; white-space: nowrap; }
+  .tag-temporal { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #bb800922; color: #e3b341; border: 1px solid #bb800966; white-space: nowrap; }
   .tag-type { padding: 2px 7px; border-radius: 4px; font-size: 11px; font-weight: 600;
               background: #6e768122; color: #c9d1d9; border: 1px solid #6e768166; white-space: nowrap; }
   .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; background: #161b22; }
@@ -415,10 +442,18 @@ function cellValue(r, k) {
         return nameHtml;
     }
     if (k === 'Plan') {
+        if (raw === 'Go + Go Plus') {
+            return '<span class="tag-plan-go">Go</span> <span class="tag-plan-plus">Go Plus</span>';
+        }
         return raw ? '<span class="tag-plan-' + (raw === 'Go Plus' ? 'plus' : 'go') + '">' + raw + '</span>' : '';
     }
-    if (k === 'Límite Mensual Incluido' && raw) {
-        return '<span class="tag-budget">' + raw + '</span>';
+    if (k === 'Límite Mensual Incluido') {
+        // En temporales ya pone "Ilimitado" en las columnas de estimación,
+        // así que aquí solo se muestra la etiqueta amarilla Temporal.
+        if (r._temporal) {
+            return '<span class="tag-temporal" title="Ilimitado por tiempo limitado">Temporal</span>';
+        }
+        return raw ? '<span class="tag-budget">' + raw + '</span>' : '';
     }
     if (k === 'ID Modelo OpenCode' && raw) {
         return '<span class="tag-code">opencode-go/' + raw + '</span>';
@@ -452,12 +487,12 @@ function compareRows(a, b) {
 function render() {
     const tbody = document.querySelector('#tbl tbody');
     let rows = DATA.filter(r => Object.values(r).some(v => String(v).toLowerCase().includes(filterText)));
-    if (planFilter) rows = rows.filter(r => (r['Plan'] || '') === planFilter);
+    if (planFilter) rows = rows.filter(r => (r['Plan'] || '').split(' + ').includes(planFilter));
     if (typeFilter) rows = rows.filter(r => (r['Tipo'] || '') === typeFilter);
     if (budgetFilter) {
         rows = rows.filter(r => {
             const raw = r['Límite Mensual Incluido'] || '';
-            // Los modelos gratuitos ("Ilimitado por tiempo limitado", "Gratis")
+            // Los modelos gratuitos ("Ilimitado", "Gratis")
             // no se excluyen: su límite no es acotado.
             if (/ilimitado|gratis/i.test(raw)) return true;
             const num = parseFloat(String(raw).replace(/,/g, '').replace(/[^0-9.]/g, '')) || 0;
