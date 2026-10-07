@@ -110,6 +110,34 @@ def clean_text(s: str) -> str:
     return re.sub(r"\s+", " ", _html.unescape(s)).strip()
 
 
+# En la tabla de precios, las insignias flotantes ("Sale price") y el texto
+# oculto para lectores de pantalla no forman parte del valor de la celda.
+TABLE_NOISE_RE = re.compile(
+    r'<span[^>]*(?:data-slot="tooltip-trigger"|class="[^"]*\bsr-only\b[^"]*")[^>]*>'
+    r".*?</span>",
+    re.S,
+)
+
+
+def clean_cell(cell: str) -> str:
+    """Limpia una celda de la tabla de precios."""
+    return clean_text(TABLE_NOISE_RE.sub(" ", cell))
+
+
+def split_price(cell: str) -> tuple[str, str]:
+    """Devuelve (precio vigente, precio original) de una celda de precio.
+
+    Las celdas en oferta marcan el precio tachado con <del> y el vigente con
+    <ins>: <del>Original price: $1.36</del><ins>Sale price: $0.68</ins>.
+    """
+    ins = re.search(r"<ins[^>]*>(.*?)</ins>", cell, re.S)
+    if not ins:
+        return clean_cell(cell), ""
+    dele = re.search(r"<del[^>]*>(.*?)</del>", cell, re.S)
+    original = clean_cell(dele.group(1)) if dele else ""
+    return clean_cell(ins.group(1)), original
+
+
 def fmt_usd(v) -> str:
     try:
         f = float(v)
@@ -264,12 +292,12 @@ def parse_docs_table(html: str) -> list[dict]:
         cells = re.findall(r"<td[^>]*>(.*?)</td>", rm.group(1), re.S)
         if len(cells) < 4:
             continue
-        name = clean_text(cells[0]).replace(" ↗", "").strip()
+        name = clean_cell(cells[0]).replace(" ↗", "").strip()
         if not name:
             continue
-        entry = clean_text(cells[1])
-        cached = clean_text(cells[2])
-        exit_ = clean_text(cells[3])
+        entry, entry_original = split_price(cells[1])
+        cached, _ = split_price(cells[2])
+        exit_, exit_original = split_price(cells[3])
         if exit_ in ("—", "-", ""):
             exit_ = ""
         sec = ""
@@ -303,6 +331,12 @@ def parse_docs_table(html: str) -> list[dict]:
         # funcionan en el tier gratuito aunque la tabla muestre precio.
         if low_name.startswith("ministral"):
             is_free = True
+        promo = ""
+        if entry_original and entry_original != entry:
+            promo = f"Precio en oferta: {entry_original} de entrada"
+            if exit_original and exit_original != exit_:
+                promo += f", {exit_original} de salida"
+            promo += " (antes)"
         models.append({
             "name": name,
             "type": tipo,
@@ -314,7 +348,7 @@ def parse_docs_table(html: str) -> list[dict]:
             "notes": f"{cached} caché" if cached and cached not in ("—", "-") else "",
             "_isDeprecated": False,
             "_supersededBy": "",
-            "_promo": "",
+            "_promo": promo,
             "_isFree": is_free,
             "_isTemporal": False,
             "_requiresPaid": not is_free,
@@ -323,10 +357,10 @@ def parse_docs_table(html: str) -> list[dict]:
 
 
 def ensure_leanstral(models: list[dict]) -> list[dict]:
-    """Añade Leanstral 1.5 si no viene en la fuente.
+    """Añade Leanstral 1.5 y Leanstral si no vienen en la fuente.
 
     Gratuito total (Apache 2.0) pero ausente de la tabla de precios;
-    obsoleto desde el 29/9/2026.
+    Leanstral 1.5 obsoleto desde el 29/9/2026, superado por Leanstral.
     """
     if not any(m["name"].lower() == "leanstral 1.5" for m in models):
         models.append({
@@ -340,6 +374,23 @@ def ensure_leanstral(models: list[dict]) -> list[dict]:
             "notes": "Obsoleto desde 29/9/2026",
             "_isDeprecated": True,
             "_supersededBy": "Leanstral",
+            "_promo": "",
+            "_isFree": True,
+            "_isTemporal": False,
+            "_requiresPaid": False,
+        })
+    if not any(m["name"].lower() == "leanstral" for m in models):
+        models.append({
+            "name": "Leanstral",
+            "type": "Texto",
+            "license": "Apache 2.0",
+            "freePlan": "Gratuito",
+            "category": "labs",
+            "priceEntry": "Gratis",
+            "priceExit": "Gratis",
+            "notes": "",
+            "_isDeprecated": False,
+            "_supersededBy": "",
             "_promo": "",
             "_isFree": True,
             "_isTemporal": False,
