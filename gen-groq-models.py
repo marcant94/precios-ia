@@ -202,7 +202,7 @@ def parse_md_tables(md: str) -> list[dict]:
 
 
 def load_groq_models() -> list[dict]:
-    md = fetch_html(MD_URL)
+    md = fetch_html(MD_URL, timeout=30)
     models = parse_md_tables(md)
     if not models:
         raise RuntimeError(f"No se encontraron tablas parseables en {MD_URL}")

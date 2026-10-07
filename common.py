@@ -9,6 +9,8 @@ gen-copilot-models.py y gen-opencode-go-models.py.
 
 import html as _html
 import re
+import time
+import urllib.error
 import urllib.request
 from datetime import datetime, timezone
 
@@ -56,12 +58,21 @@ def clean_text(s: str) -> str:
     return _html.unescape(s).strip()
 
 
-def fetch_html(url: str, timeout: int = 15) -> str:
-    """Descarga HTML con User-Agent y timeout."""
-    req = urllib.request.Request(url, headers={"User-Agent": UA})
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
-        charset = resp.headers.get_content_charset(failobj="utf-8")
-        return resp.read().decode(charset, errors="ignore")
+def fetch_html(url: str, timeout: int = 30, retries: int = 3) -> str:
+    """Descarga HTML con User-Agent, timeout y reintentos ante fallos transitorios."""
+    last_err: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": UA})
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                charset = resp.headers.get_content_charset(failobj="utf-8")
+                return resp.read().decode(charset, errors="ignore")
+        except (TimeoutError, urllib.error.URLError, ConnectionError, OSError) as e:
+            last_err = e
+            print(f"fetch_html: intento {attempt}/{retries} fallido para {url}: {e}")
+            if attempt < retries:
+                time.sleep(2 * attempt)
+    raise RuntimeError(f"No se pudo descargar {url} tras {retries} intentos: {last_err}")
 
 
 def parse_cost(val) -> float:
