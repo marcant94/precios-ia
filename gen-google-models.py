@@ -17,12 +17,12 @@ import argparse
 import json
 import os
 import re
-import subprocess
 import sys
 
 from common import (
     build_header_cells,
     clean_text,
+    fetch_via_curl,
     parse_cost,
     parse_family_version,
     resolve_transitive_superseded,
@@ -32,13 +32,7 @@ from common import (
 
 def fetch_html(url: str, timeout: int = 30) -> str:
     """Descarga HTML usando curl (urllib falla con redirects de Google)."""
-    result = subprocess.run(
-        ['curl', '-sL', '-H', f'User-Agent: Mozilla/5.0', url],
-        capture_output=True, text=True, timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"curl failed: {result.stderr[:200]}")
-    return result.stdout
+    return fetch_via_curl(url, timeout=timeout)
 
 PAGE_URL = "https://ai.google.dev/gemini-api/docs/pricing?hl=es-419"
 # Página de modelos: contiene el estado de ciclo de vida de cada modelo

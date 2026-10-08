@@ -24,10 +24,9 @@ import html as _html
 import json
 import os
 import re
-import subprocess
 import sys
 
-from common import build_header_cells, stamp_updated
+from common import build_header_cells, fetch_via_curl, stamp_updated
 
 PAGE_URL = "https://developers.cloudflare.com/workers-ai/platform/pricing/"
 MD_URL = "https://developers.cloudflare.com/workers-ai/platform/pricing/index.md"
@@ -76,13 +75,7 @@ PRICE_M_RE = re.compile(
 
 
 def fetch_md(url: str, timeout: int = 30) -> str:
-    result = subprocess.run(
-        ["curl", "-sL", "-H", "User-Agent: Mozilla/5.0", url],
-        capture_output=True, text=True, timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"curl failed: {result.stderr[:200]}")
-    return result.stdout
+    return fetch_via_curl(url, timeout=timeout)
 
 
 def detect_paid_models(md: str) -> set[str]:

@@ -22,6 +22,7 @@ import sys
 
 from common import (
     build_header_cells,
+    fetch_via_curl,
     parse_cost,
     parse_family_version,
     resolve_transitive_superseded,
@@ -250,18 +251,7 @@ def parse_md_tables(md: str) -> list[dict]:
 
 def load_openai_models() -> list[dict]:
     """Descarga el Markdown oficial de OpenAI y lo parsea."""
-    import subprocess
-
-    def fetch(url: str) -> str:
-        result = subprocess.run(
-            ['curl', '-sL', '-H', 'User-Agent: Mozilla/5.0', url],
-            capture_output=True, text=True, timeout=30,
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"curl failed: {result.stderr[:200]}")
-        return result.stdout
-
-    md = fetch(MD_URL)
+    md = fetch_via_curl(MD_URL)
     models = parse_md_tables(md)
     if not models:
         raise RuntimeError(f"No se encontraron tablas parseables en {MD_URL}")

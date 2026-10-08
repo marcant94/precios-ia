@@ -19,10 +19,9 @@ import html as _html
 import json
 import os
 import re
-import subprocess
 import sys
 
-from common import build_header_cells, stamp_updated
+from common import build_header_cells, fetch_via_curl, stamp_updated
 
 PAGE_URL = "https://mistral.ai/pricing/api/"
 
@@ -82,13 +81,7 @@ PRICES_ATTR_RE = re.compile(r'data-prices="([^"]+)"')
 
 
 def fetch_html(url: str, timeout: int = 30) -> str:
-    result = subprocess.run(
-        ["curl", "-sL", "-H", "User-Agent: Mozilla/5.0", url],
-        capture_output=True, text=True, timeout=timeout,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"curl failed: {result.stderr[:200]}")
-    return result.stdout
+    return fetch_via_curl(url, timeout=timeout)
 
 
 def clean_text(s: str) -> str:

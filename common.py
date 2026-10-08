@@ -2,13 +2,14 @@
 """
 Utilidades comunes para los generadores de precios.
 
-Centraliza: descarga HTTP, limpieza de HTML, parsing de costes/versiones
-y detección de modelos superados. Evita duplicación entre
-gen-copilot-models.py y gen-opencode-go-models.py.
+Centraliza: descarga HTTP (urllib y curl, con reintentos), limpieza de HTML,
+parsing de costes/versiones y detección de modelos superados. Evita
+duplicación entre los generadores.
 """
 
 import html as _html
 import re
+import subprocess
 import time
 import urllib.error
 import urllib.request
@@ -70,6 +71,32 @@ def fetch_html(url: str, timeout: int = 30, retries: int = 3) -> str:
         except (TimeoutError, urllib.error.URLError, ConnectionError, OSError) as e:
             last_err = e
             print(f"fetch_html: intento {attempt}/{retries} fallido para {url}: {e}")
+            if attempt < retries:
+                time.sleep(2 * attempt)
+    raise RuntimeError(f"No se pudo descargar {url} tras {retries} intentos: {last_err}")
+
+
+def fetch_via_curl(url: str, timeout: int = 30, retries: int = 3) -> str:
+    """
+    Descarga con curl para sitios donde urllib falla (p.ej. redirects de Google).
+    Reintenta ante fallos transitorios (5xx, timeouts, respuestas vacías);
+    `--fail` convierte los errores HTTP en código de salida para poder reintentar.
+    """
+    last_err: Exception | None = None
+    for attempt in range(1, retries + 1):
+        try:
+            result = subprocess.run(
+                ["curl", "-sfSL", "-H", "User-Agent: Mozilla/5.0", url],
+                capture_output=True, text=True, timeout=timeout,
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"curl exit {result.returncode}: {result.stderr[:200]}")
+            if not result.stdout.strip():
+                raise RuntimeError("respuesta vacía")
+            return result.stdout
+        except (subprocess.TimeoutExpired, OSError, RuntimeError) as e:
+            last_err = e
+            print(f"fetch_via_curl: intento {attempt}/{retries} fallido para {url}: {e}")
             if attempt < retries:
                 time.sleep(2 * attempt)
     raise RuntimeError(f"No se pudo descargar {url} tras {retries} intentos: {last_err}")
