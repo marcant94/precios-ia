@@ -7,10 +7,14 @@ on:
   push:
     branches: [main, master]
     paths:
-      - "gen-*.py"
+      - "fetch_models.py"
+      - "schema.py"
+      - "build_data.py"
+      - "build_page.py"
+      - "enrich_*.py"
       - "common.py"
       - "build.sh"
-      - "index.html"
+      - "assets/**"
       - ".github/workflows/update-models.yml"
 
 permissions:
@@ -24,7 +28,7 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
 
@@ -32,8 +36,14 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: Generar HTML en public/
+      - name: Generar public/ (resiliente: un proveedor fallido no tumba el build)
         run: ./build.sh
+
+      - name: Resumen de errores por proveedor
+        if: always()
+        run: |
+          echo "## Errores por proveedor" >> "$GITHUB_STEP_SUMMARY"
+          cat public/data/errors.json >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configurar Pages
         uses: actions/configure-pages@v5
