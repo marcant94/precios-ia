@@ -36,7 +36,7 @@ jobs:
         with:
           python-version: "3.14"
 
-      - name: "Generar public/ (resiliente: un proveedor fallido no tumba el build)"
+      - name: Generar web en public/
         run: ./build.sh
 
       - name: Resumen de errores por proveedor
