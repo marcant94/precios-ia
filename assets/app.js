@@ -11,7 +11,9 @@ let sortAsc = true;
 let filterText = '';
 let provFilter = '';   // '' = Todos
 let typeFilter = '';
-let planFilter = '';
+let planFilter = 'Go';
+/* Umbral de "límite alto" según plan: Go -> $60, Go Plus -> $120. */
+function budgetThreshold() { return planFilter === 'Go Plus' ? 120 : 60; }
 let budgetFilter = false;
 let unit = 'usd';      // 'usd' | 'credits' (solo copilot)
 let showDeprecated = false;
@@ -74,12 +76,19 @@ function escapeAttr(s) {
    Precio efectivo de entrada = mezcla del precio con caché y sin caché según
    la tasa de acierto (el caché abarata mucho, por eso "cuenta más").
    Peticiones = presupuesto mensual / coste por petición. */
+/* Budget de un plan: número, o Infinity si es Ilimitado/Gratis. */
+function parseBudget(b) {
+  if (/ilimit|unlimit|gratis|free/i.test(String(b || ''))) return Infinity;
+  const v = parseFloat(String(b || '').replace(/[^0-9.]/g, ''));
+  return v > 0 ? v : 0;
+}
+
 function planBudgets(r, plan) {
   const ex = r.extras || {};
   const vals = [];
   const collect = (b) => {
-    const v = parseFloat(String(b || '').replace(/[^0-9.]/g, ''));
-    if (v > 0) vals.push(v);
+    const v = parseBudget(b);
+    if (v > 0 || v === Infinity) vals.push(v);
   };
   if (Array.isArray(ex.plans) && ex.plans.length) {
     ex.plans.forEach(p => { if (!plan || p.plan === plan) collect(p.monthlyBudget); });
@@ -91,10 +100,21 @@ function planBudgets(r, plan) {
 
 function modelBudget(r) {
   // Si hay un plan seleccionado (Go / Go Plus), solo cuenta su budget;
-  // si no, el máximo entre planes.
+  // si no, el máximo entre planes. Ilimitado/Gratis = Infinity.
   const vals = planBudgets(r, planFilter || '');
   if (vals.length) return Math.max.apply(null, vals);
   return 0;
+}
+
+/* Etiqueta del límite mensual para el plan activo (Go por defecto). */
+function planBudgetLabel(r) {
+  const ex = r.extras || {};
+  const want = planFilter || 'Go';
+  if (Array.isArray(ex.plans) && ex.plans.length) {
+    const p = ex.plans.find(p => p.plan === want) || ex.plans[0];
+    return p ? p.monthlyBudget : '';
+  }
+  return ex.monthlyBudget || '';
 }
 
 function estRequests(r) {
@@ -167,6 +187,12 @@ function cellValue(r, k) {
     return e === null ? '<span class="muted">-</span>' : '<span class="numeric">' + e.toLocaleString('es') + '</span>';
   }
   if (k === 'status') {
+    // OpenCode Go no tiene estado: mostrar el límite mensual del plan activo.
+    if (r.provider === 'opencode-go') {
+      const b = planBudgetLabel(r);
+      if (b) return '<span class="tag-budget">' + escapeHtml(b) + '</span>';
+      return '<span class="muted">-</span>';
+    }
     const st = r.status || (r.extras || {}).groqStatus || '';
     if (!st) return '<span class="muted">-</span>';
     const cls = /preview|beta|temporal/i.test(st) ? 'status-preview' : 'status-ga';
@@ -229,8 +255,8 @@ function filteredRows() {
   let rows = DATA.filter(r => {
     if (!showDeprecated && isDeprecated(r)) return false;
     if (provFilter && r.provider !== provFilter) return false;
-    if (planFilter && !matchPlan(r, planFilter)) return false;
-    if (budgetFilter && !(modelBudget(r) >= 60)) return false;
+    if (provFilter === 'opencode-go' && planFilter && !matchPlan(r, planFilter)) return false;
+    if (provFilter === 'opencode-go' && budgetFilter && !(modelBudget(r) >= budgetThreshold())) return false;
     if (typeFilter && rowType(r) !== typeFilter) return false;
     if (filterText) {
       const hay = (r.name + ' ' + r.modelId + ' ' + r.providerName + ' ' + (r.description || '')).toLowerCase();
@@ -246,6 +272,9 @@ function compareRows(a, b) {
   let va, vb;
   if (sortKey === 'type') { va = rowType(a); vb = rowType(b); }
   else if (sortKey === 'estReq') { va = estRequests(a) || 0; vb = estRequests(b) || 0; }
+  else if (sortKey === 'status' && (a.provider === 'opencode-go' || b.provider === 'opencode-go')) {
+    va = modelBudget(a); vb = modelBudget(b); // en Go, Estado = límite mensual
+  }
   else if (NUMERIC.includes(sortKey)) { va = Number(a[sortKey]) || 0; vb = Number(b[sortKey]) || 0; }
   else { va = String(a[sortKey] || '').toLowerCase(); vb = String(b[sortKey] || '').toLowerCase(); }
   if (va < vb) return sortAsc ? -1 : 1;
@@ -277,19 +306,24 @@ function render() {
   const isGo = provFilter === 'opencode-go';
   document.querySelector('#planWrap').style.display = isGo ? '' : 'none';
   document.querySelector('#budgetWrap').style.display = isGo ? '' : 'none';
+  if (isGo) {
+    document.querySelector('#budgetLabel').textContent = 'Límite ≥ $' + budgetThreshold();
+    document.querySelector('#budgetWrap').title = 'Solo modelos con límite mensual incluido ≥ $' + budgetThreshold();
+  }
   if (!isCopilot) unit = 'usd';
-  if (!isGo) { planFilter = ''; budgetFilter = false; }
+  if (!isGo) { budgetFilter = false; }
 }
 
 function buildHead() {
   const cols = showEst ? COLS.concat([['estReq', 'Peticiones est.']]) : COLS;
+  const statusLabel = provFilter === 'opencode-go' ? 'Límite mensual' : 'Estado';
   document.querySelector('#tbl thead').innerHTML =
     '<tr><th rowspan="2" data-k="providerName">Proveedor <span class="arrow"></span></th>'
     + '<th rowspan="2" data-k="name">Modelo <span class="arrow"></span></th>'
     + '<th rowspan="2" data-k="type">Tipo <span class="arrow"></span></th>'
     + '<th colspan="4" class="price-group" id="priceGroupLabel">Precio ($/M)</th>'
     + '<th rowspan="2" data-k="context">Contexto <span class="arrow"></span></th>'
-    + '<th rowspan="2" data-k="status">Estado <span class="arrow"></span></th>'
+    + '<th rowspan="2" data-k="status">' + statusLabel + ' <span class="arrow"></span></th>'
     + (showEst ? '<th rowspan="2" data-k="estReq">Peticiones est. <span class="arrow"></span></th>' : '')
     + '</tr><tr>'
     + '<th data-k="input">Entrada <span class="arrow"></span></th>'
@@ -319,6 +353,15 @@ function buildFilters() {
     }).join('');
   wrap.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
     provFilter = b.dataset.p;
+    // Al cambiar de proveedor: desactivar estimación y resetear plan a Go.
+    showEst = false;
+    document.querySelector('#estSwitch').checked = false;
+    document.querySelector('#estBar').style.display = 'none';
+    planFilter = 'Go';
+    document.querySelector('#planFilter').value = 'Go';
+    budgetFilter = false;
+    document.querySelector('#budgetSwitch').checked = false;
+    buildHead();
     buildFilters();
     render();
   }));
@@ -364,7 +407,13 @@ async function init() {
 
   document.querySelector('#filter').addEventListener('input', e => { filterText = e.target.value.trim().toLowerCase(); render(); });
   document.querySelector('#typeFilter').addEventListener('change', e => { typeFilter = e.target.value; render(); });
-  document.querySelector('#planFilter').addEventListener('change', e => { planFilter = e.target.value; render(); });
+  document.querySelector('#planFilter').addEventListener('change', e => {
+    planFilter = e.target.value;
+    // El umbral de "límite alto" depende del plan: resetear el check.
+    budgetFilter = false;
+    document.querySelector('#budgetSwitch').checked = false;
+    render();
+  });
   document.querySelector('#budgetSwitch').addEventListener('change', e => { budgetFilter = e.target.checked; render(); });
   document.querySelector('#depSwitch').addEventListener('change', e => {
     showDeprecated = e.target.checked;

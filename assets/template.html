@@ -17,10 +17,10 @@
   <input type="search" id="filter" placeholder="Filtrar por nombre, id o descripción...">
   <select id="typeFilter" title="Filtrar por tipo"><option value="">Todos los tipos</option></select>
   <span id="planWrap" style="display:none">Plan:
-    <select id="planFilter"><option value="">Go y Go Plus</option><option>Go</option><option>Go Plus</option></select>
+    <select id="planFilter"><option>Go</option><option>Go Plus</option></select>
   </span>
-  <label class="switch" id="budgetWrap" style="display:none" title="Solo modelos con límite mensual incluido ≥ $60">
-    <input type="checkbox" id="budgetSwitch"> Límite ≥ $60
+  <label class="switch" id="budgetWrap" style="display:none" title="Solo modelos con límite mensual incluido alto">
+    <input type="checkbox" id="budgetSwitch"> <span id="budgetLabel">Límite ≥ $60</span>
   </label>
   <label class="switch" id="unitSwitchWrap" style="display:none" title="1 AI credit = $0.01 USD (oficial). Alterna entre dólares y créditos.">
     <input type="checkbox" id="unitSwitch"> AI créditos
