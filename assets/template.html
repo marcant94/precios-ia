@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Precios IA — comparativa de modelos</title>
+<link rel="stylesheet" href="assets/style.css">
+</head>
+<body>
+<h1>Precios IA</h1>
+<p class="muted">Comparativa de precios y límites — fuente base <a href="https://models.dev/" target="_blank">models.dev</a> (open-source), con extras de documentación oficial. <span id="updated"></span>. Haz clic en una fila para ver el detalle. Haz clic en columnas para ordenar.</p>
+<div id="errorBanner"></div>
+<div class="toolbar">
+  <div class="prov-btns" id="provBtns"></div>
+</div>
+<div class="toolbar">
+  <input type="search" id="filter" placeholder="Filtrar por nombre, id o descripción...">
+  <select id="typeFilter" title="Filtrar por tipo"><option value="">Todos los tipos</option></select>
+  <span id="planWrap" style="display:none">Plan:
+    <select id="planFilter"><option value="">Go y Go Plus</option><option>Go</option><option>Go Plus</option></select>
+  </span>
+  <label class="switch" id="budgetWrap" style="display:none" title="Solo modelos con límite mensual incluido ≥ $60">
+    <input type="checkbox" id="budgetSwitch"> Límite ≥ $60
+  </label>
+  <label class="switch" id="unitSwitchWrap" style="display:none" title="1 AI credit = $0.01 USD (oficial). Alterna entre dólares y créditos.">
+    <input type="checkbox" id="unitSwitch"> AI créditos
+  </label>
+  <label class="switch" id="depWrap" title="Mostrar modelos obsoletos">
+    <input type="checkbox" id="depSwitch"> Mostrar obsoletos
+  </label>
+  <label class="switch" title="Estima peticiones con tu presupuesto y tasa de caché">
+    <input type="checkbox" id="estSwitch"> Estimar peticiones
+  </label>
+  <span class="muted" id="count"></span>
+</div>
+<div class="est-bar" id="estBar" style="display:none">
+  <span>Entrada (tokens/petición): <input type="number" id="estIn" value="20000" min="0" step="1000"></span>
+  <span>Salida (tokens/petición): <input type="number" id="estOut" value="1000" min="0" step="100"></span>
+  <span>Caché acierto (%): <input type="number" id="estCache" value="85" min="0" max="100" step="5"></span>
+  <span>Presupuesto $ si el modelo no declara límite: <input type="number" id="estBudget" value="10" min="1" step="1"></span>
+  <span class="muted">Coste por petición = (entrada × precio efectivo con caché + salida × precio salida). Peticiones = presupuesto / coste.</span>
+</div>
+<div class="table-wrap">
+<table id="tbl">
+  <thead></thead>
+  <tbody></tbody>
+</table>
+</div>
+<footer>Datos: models.dev API + docs oficiales (OpenCode Go, Groq). Precios $/M tokens salvo indicación.</footer>
+<script src="assets/app.js"></script>
+</body>
+</html>

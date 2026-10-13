@@ -43,7 +43,7 @@ jobs:
         if: always()
         run: |
           echo "## Errores por proveedor" >> "$GITHUB_STEP_SUMMARY"
-          cat public/data/errors.json >> "$GITHUB_STEP_SUMMARY"
+          cat public/data/errors.json >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "(sin datos: el build no generó public/data)" >> "$GITHUB_STEP_SUMMARY"
 
       - name: Configurar Pages
         uses: actions/configure-pages@v5

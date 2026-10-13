@@ -4,6 +4,7 @@ __pycache__/
 public/
 *.html
 !/index.html
+!assets/template.html
 !.github/
 data/
 !data/.gitkeep
