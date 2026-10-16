@@ -55,7 +55,15 @@ const COLS = [
 /* ---- formato ---- */
 function fmtPrice(v) {
   if (v === null || v === undefined || v === '') return '<span class="muted">-</span>';
-  return '$' + Number(v).toFixed(2);
+  // Muchos proveedores declaran precios con más de 2 decimales (sobre todo
+  // lectura/escritura de caché, p.ej. 0.125 $/M). Mostramos 2 decimales por
+  // defecto y añadimos más (hasta 4) solo cuando aportan precisión real.
+  const n = Number(v);
+  let dec = 2;
+  for (let d = 3; d <= 4; d++) {
+    if (Number(n.toFixed(d)) !== Number(n.toFixed(dec))) dec = d;
+  }
+  return '$' + n.toFixed(dec);
 }
 function fmtCtx(v) {
   if (v === null || v === undefined || v === '') return '<span class="muted">-</span>';
