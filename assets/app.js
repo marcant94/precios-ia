@@ -36,6 +36,7 @@ const BRAND = {
   'groq': '#f55036',
   'xai': '#f0f6fc',
   'nvidia': '#76b900',
+  'cloudflare-workers-ai': '#f38020',
 };
 
 const NUMERIC = ['input', 'cacheRead', 'cacheWrite', 'output', 'context', 'estReq'];

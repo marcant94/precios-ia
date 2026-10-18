@@ -17,15 +17,8 @@ PROVIDERS = [
     "groq",
     "xai",
     "nvidia",
+    "cloudflare-workers-ai",
 ]
-
-# Alias históricos -> id canónico models.dev
-PROVIDER_ALIASES = {
-    "copilot": "github-copilot",
-    "claude": "anthropic",
-    "opencode": "opencode-go",
-    "cloudflare": "cloudflare-workers-ai",
-}
 
 # Nombre bonito para mostrar
 PROVIDER_LABELS = {
@@ -38,6 +31,7 @@ PROVIDER_LABELS = {
     "groq": "Groq",
     "xai": "xAI",
     "nvidia": "Nvidia",
+    "cloudflare-workers-ai": "Cloudflare Workers AI",
 }
 
 API_URL = "https://models.dev/api.json"
