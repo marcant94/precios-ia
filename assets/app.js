@@ -17,6 +17,9 @@ function budgetThreshold() { return planFilter === 'Go Plus' ? 120 : 60; }
 let budgetFilter = false;
 let unit = 'usd';      // 'usd' | 'credits' (solo copilot)
 let showDeprecated = false;
+let onlyReasoning = false;
+let onlyTools = false;
+const inputFilter = new Set();   // modalidades de entrada exigidas (AND)
 let showEst = false;
 let estIn = 20000;     // tokens de entrada por petición
 let estOut = 1000;     // tokens de salida por petición
@@ -45,12 +48,22 @@ const COLS = [
   ['providerName', 'Proveedor'],
   ['name', 'Modelo'],
   ['type', 'Tipo'],
+  ['accepts', 'Acepta'],
   ['input', 'Entrada ($/M)'],
   ['cacheRead', 'Lectura Caché ($/M)'],
   ['cacheWrite', 'Escritura Caché ($/M)'],
   ['output', 'Salida ($/M)'],
   ['context', 'Contexto'],
   ['status', 'Estado'],
+];
+
+/* Modalidades de entrada, en el orden en que se muestran. */
+const MODALITIES = [
+  ['text', '📝', 'Texto'],
+  ['image', '🖼', 'Imagen'],
+  ['video', '🎬', 'Vídeo'],
+  ['audio', '🎤', 'Audio'],
+  ['pdf', '📰', 'PDF'],
 ];
 
 /* ---- formato ---- */
@@ -69,8 +82,10 @@ function fmtPrice(v) {
 function fmtCtx(v) {
   if (v === null || v === undefined || v === '') return '<span class="muted">-</span>';
   const n = Number(v);
-  if (n >= 1048576) return (n / 1048576).toFixed(n % 1048576 ? 1 : 0) + 'M';
-  if (n >= 1024) return Math.round(n / 1024) + 'K';
+  // Sufijos K/M decimales (como los anuncia el proveedor: 128K, 1M), no 1024.
+  if (!Number.isFinite(n) || n <= 0) return '<span class="muted">-</span>';
+  if (n >= 1e6) return (n / 1e6).toFixed(1).replace(/\.0$/, '') + 'M';
+  if (n >= 1e3) return Math.round(n / 1e3) + 'K';
   return String(n);
 }
 function escapeHtml(s) {
@@ -145,12 +160,36 @@ function isDeprecated(r) {
 }
 
 function rowType(r) {
-  const mods = ((r.modalities || {}).input || []).join(' ').toLowerCase();
-  if (/audio/.test(mods) && !/text|image|video/.test(mods)) return 'Voz';
-  if (/image|video/.test(mods) && /audio/.test(mods)) return 'Multimodal';
-  if (/image|video/.test(mods)) return 'Visión';
-  if (r.reasoning) return 'Razonamiento';
-  return 'Texto';
+  // Lo calcula build_data.py a partir de la salida del modelo: qué produce.
+  return r.kind || 'Texto';
+}
+
+/* Modalidades que acepta el modelo como entrada. */
+function rowModalities(r) {
+  const mods = (r.modalities || {}).input;
+  return new Set(Array.isArray(mods) && mods.length ? mods : ['text']);
+}
+
+const KIND_HINTS = {
+  'Texto': 'Devuelve texto: chat, razonamiento, código o visión por texto',
+  'Transcripción': 'Audio a texto: transcripción y traducción de voz',
+  'Voz': 'Genera audio o voz: TTS, música y conversación en tiempo real',
+  'Imagen': 'Genera o edita imágenes',
+  'Vídeo': 'Genera vídeo',
+  'Embeddings': 'Embeddings o reranking; no genera texto de chat',
+};
+
+const MODALITY_LABELS = { text: 'texto', image: 'imagen', audio: 'audio', video: 'vídeo', pdf: 'PDF' };
+function fmtModalities(list) {
+  return (list || []).map(m => MODALITY_LABELS[m] || m).join(', ');
+}
+
+/* Iconos de las modalidades aceptadas; el texto va siempre primero. */
+function modBadges(r) {
+  const mods = rowModalities(r);
+  return '<span class="mods">' + MODALITIES.filter(([k]) => mods.has(k)).map(([k, icon, label]) =>
+    '<span class="mod" role="img" aria-label="Acepta ' + label.toLowerCase() + '" title="Acepta ' + label.toLowerCase() + '">' + icon + '</span>'
+  ).join('') + '</span>';
 }
 
 function logoHtml(provider) {
@@ -173,13 +212,24 @@ function cellValue(r, k) {
     }
     if (ex.promo) h += ' <span class="tag-promo" title="' + escapeAttr(ex.promo) + '">Promo</span>';
     if (ex.temporal) h += ' <span class="tag-promo">Temporal</span>';
+    if (r.toolCall) h += ' <span class="tag-tools" title="Soporta function calling (tool_call)">⚙</span>';
+    if (r.reasoning) h += ' <span class="tag-reason" title="Modelo con razonamiento">🧠</span>';
     if (isDeprecated(r)) h += ' <span class="tag-deprecated">Obsoleto</span>';
     return h;
   }
-  if (k === 'type') return '<span class="tag-type">' + escapeHtml(rowType(r)) + '</span>';
-  if (['input', 'cacheRead', 'cacheWrite', 'output'].includes(k)) {
+  if (k === 'type') {
+    const t = rowType(r);
+    const hint = KIND_HINTS[t] ? ' title="' + escapeAttr(KIND_HINTS[t]) + '"' : '';
+    return '<span class="tag-type"' + hint + '>' + escapeHtml(t) + '</span>';
+  }
+  if (k === 'accepts') return modBadges(r);  if (['input', 'cacheRead', 'cacheWrite', 'output'].includes(k)) {
     const raw = r[k];
-    if (raw === null || raw === undefined || raw === '') return '<span class="muted">-</span>';
+    if (raw === null || raw === undefined || raw === '') {
+      const title = r.priceUnavailable
+        ? ' title="El proveedor no publica el precio de este modelo"'
+        : '';
+      return '<span class="muted"' + title + '>-</span>';
+    }
     const n = Number(raw);
     let disp;
     if (unit === 'credits' && r.provider === 'github-copilot' && n > 0) {
@@ -229,7 +279,13 @@ function detailHtml(r) {
   const items = [];
   const add = (k, v) => { if (v !== '' && v !== null && v !== undefined && v !== false) items.push('<dt>' + k + '</dt><dd>' + escapeHtml(String(v)) + '</dd>'); };
   add('ID', r.modelId);
+  add('También', (r.aliases || []).join(', '));
+  if (r.priceUnavailable) items.push('<dt>Precio</dt><dd>No publicado por el proveedor</dd>');
+  else if (r.free) items.push('<dt>Precio</dt><dd>Gratis</dd>');
   if (r.description) items.push('<dt>Descripción</dt><dd>' + escapeHtml(r.description) + '</dd>');
+  const mods = r.modalities || {};
+  add('Entrada', fmtModalities(mods.input));
+  add('Salida', fmtModalities(mods.output));
   add('Familia', r.family);
   add('Límite salida', r.outputLimit ? Number(r.outputLimit).toLocaleString('es') : '');
   add('ID canónico', r.canonicalId);
@@ -260,10 +316,22 @@ function matchPlan(r, want) {
   return (ex.plan || '') === want;
 }
 
+/* Filtros de faceta compartidos por la tabla y la lista de tipos. */
+function matchesFacets(r) {
+  if (!showDeprecated && isDeprecated(r)) return false;
+  if (onlyReasoning && !r.reasoning) return false;
+  if (onlyTools && !r.toolCall) return false;
+  if (inputFilter.size) {
+    const mods = rowModalities(r);
+    for (const m of inputFilter) if (!mods.has(m)) return false;
+  }
+  if (provFilter && r.provider !== provFilter) return false;
+  return true;
+}
+
 function filteredRows() {
   let rows = DATA.filter(r => {
-    if (!showDeprecated && isDeprecated(r)) return false;
-    if (provFilter && r.provider !== provFilter) return false;
+    if (!matchesFacets(r)) return false;
     if (provFilter === 'opencode-go' && planFilter && !matchPlan(r, planFilter)) return false;
     if (provFilter === 'opencode-go' && budgetFilter && !(modelBudget(r) >= budgetThreshold())) return false;
     if (typeFilter && rowType(r) !== typeFilter) return false;
@@ -277,15 +345,35 @@ function filteredRows() {
   return rows;
 }
 
+/* Valor numérico para ordenar; null cuando no hay dato. */
+function numOrNull(v) {
+  if (v === null || v === undefined || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+}
+
 function compareRows(a, b) {
-  let va, vb;
+  let va, vb, unknownLast = false;
   if (sortKey === 'type') { va = rowType(a); vb = rowType(b); }
-  else if (sortKey === 'estReq') { va = estRequests(a) || 0; vb = estRequests(b) || 0; }
+  else if (sortKey === 'accepts') { va = rowModalities(a).size; vb = rowModalities(b).size; }
+  else if (sortKey === 'estReq') { va = estRequests(a); vb = estRequests(b); unknownLast = true; }
   else if (sortKey === 'status' && (a.provider === 'opencode-go' || b.provider === 'opencode-go')) {
     va = modelBudget(a); vb = modelBudget(b); // en Go, Estado = límite mensual
   }
-  else if (NUMERIC.includes(sortKey)) { va = Number(a[sortKey]) || 0; vb = Number(b[sortKey]) || 0; }
+  else if (NUMERIC.includes(sortKey)) {
+    va = numOrNull(a[sortKey]); vb = numOrNull(b[sortKey]); unknownLast = true;
+    // Contexto 0 significa "sin dato" (se muestra como "-"): al final.
+    if (sortKey === 'context') {
+      if (va !== null && va <= 0) va = null;
+      if (vb !== null && vb <= 0) vb = null;
+    }
+  }
   else { va = String(a[sortKey] || '').toLowerCase(); vb = String(b[sortKey] || '').toLowerCase(); }
+  // Los precios/estimaciones desconocidos van siempre al final, tanto asc como desc.
+  if (unknownLast && (va === null || vb === null)) {
+    if (va === vb) return 0;
+    return va === null ? 1 : -1;
+  }
   if (va < vb) return sortAsc ? -1 : 1;
   if (va > vb) return sortAsc ? 1 : -1;
   return 0;
@@ -330,6 +418,7 @@ function buildHead() {
     '<tr><th rowspan="2" data-k="providerName">Proveedor <span class="arrow"></span></th>'
     + '<th rowspan="2" data-k="name">Modelo <span class="arrow"></span></th>'
     + '<th rowspan="2" data-k="type">Tipo <span class="arrow"></span></th>'
+    + '<th rowspan="2" data-k="accepts" class="accepts-h" title="Modalidades de entrada que acepta">Acepta <span class="arrow"></span></th>'
     + '<th colspan="4" class="price-group" id="priceGroupLabel">Precio ($/M)</th>'
     + '<th rowspan="2" data-k="context">Contexto <span class="arrow"></span></th>'
     + '<th rowspan="2" data-k="status">' + statusLabel + ' <span class="arrow"></span></th>'
@@ -376,9 +465,25 @@ function buildFilters() {
   }));
   const sel = document.querySelector('#typeFilter');
   const cur = sel.value;
-  const types = [...new Set(DATA.filter(r => (showDeprecated || !isDeprecated(r)) && (!provFilter || r.provider === provFilter)).map(rowType))].sort();
+  // Lista estable (todos los tipos presentes en los datos): si dependiera de
+  // los chips activos, opciones como "Imagen" desaparecerían sin explicación.
+  const types = [...new Set(DATA.map(rowType))].sort();
   sel.innerHTML = '<option value="">Todos los tipos</option>' + types.map(t => '<option' + (t === cur ? ' selected' : '') + '>' + t + '</option>').join('');
   if (!types.includes(cur)) { sel.value = ''; typeFilter = ''; }
+
+  // Chips de modalidades de entrada (multiselección: debe aceptar todas).
+  const modWrap = document.querySelector('#modBtns');
+  modWrap.innerHTML = MODALITIES.map(([k, icon, label]) =>
+    '<button class="mod-btn' + (inputFilter.has(k) ? ' active' : '') + '" data-m="' + k + '"'
+    + ' aria-pressed="' + inputFilter.has(k) + '" title="Solo modelos que aceptan ' + label.toLowerCase() + '">'
+    + icon + ' ' + label + '</button>').join('');
+  modWrap.querySelectorAll('button').forEach(b => b.addEventListener('click', () => {
+    const m = b.dataset.m;
+    if (inputFilter.has(m)) inputFilter.delete(m);
+    else inputFilter.add(m);
+    buildFilters();
+    render();
+  }));
 }
 
 function renderErrors() {
@@ -426,6 +531,16 @@ async function init() {
   document.querySelector('#budgetSwitch').addEventListener('change', e => { budgetFilter = e.target.checked; render(); });
   document.querySelector('#depSwitch').addEventListener('change', e => {
     showDeprecated = e.target.checked;
+    buildFilters();
+    render();
+  });
+  document.querySelector('#reasonSwitch').addEventListener('change', e => {
+    onlyReasoning = e.target.checked;
+    buildFilters();
+    render();
+  });
+  document.querySelector('#toolsSwitch').addEventListener('change', e => {
+    onlyTools = e.target.checked;
     buildFilters();
     render();
   });

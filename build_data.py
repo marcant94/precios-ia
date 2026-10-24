@@ -14,12 +14,18 @@ Uso:
 import argparse
 import json
 import os
+import re
 import sys
 from datetime import datetime, timezone
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import normalize_name, parse_family_version
 from schema import PROVIDERS, model_to_row
+
+PRICE_FIELDS = ("input", "cacheRead", "cacheWrite", "output")
+FREE_RE = re.compile(r"\bfree\b", re.IGNORECASE)
+LATEST_RE = re.compile(r"\s*[\(\[]\s*latest\s*[\)\]]\s*$|\s+latest\s*$", re.IGNORECASE)
+LATEST_ID_RE = re.compile(r"-latest$", re.IGNORECASE)
 
 
 def load_json(path):
@@ -49,6 +55,119 @@ def ge(new, old) -> bool:
     if new is None or old is None:
         return True
     return num(new) >= num(old)
+
+
+def is_priced(row: dict) -> bool:
+    """True si la fila declara algún precio mayor que cero."""
+    return any(num(row.get(k)) > 0 for k in PRICE_FIELDS)
+
+
+def mark_price_state(rows: list[dict]) -> None:
+    """
+    Distingue el precio 0 real del precio desconocido (in-place).
+
+    models.dev rellena con 0 los modelos cuyo precio el proveedor no publica
+    (NVIDIA declara 0 en todo su catálogo, sin tarifa de caché), lo que los
+    hace parecer gratis y los coloca en cabeza al ordenar por precio. Un 0 solo
+    se acepta como gratuito si el nombre lo declara ("Free").
+    """
+    for r in rows:
+        if is_priced(r):
+            continue
+        if FREE_RE.search((r["name"] or "") + " " + (r["modelId"] or "")):
+            r["free"] = True
+            continue
+        r["priceUnavailable"] = True
+        for k in PRICE_FIELDS:
+            r[k] = None
+
+
+def price_sig(row: dict) -> tuple:
+    """Huella de tarifa: dos filas con la misma se refieren al mismo modelo."""
+    return tuple(row.get(k) for k in PRICE_FIELDS + ("context",))
+
+
+def resolve_latest_aliases(rows: list[dict]) -> list[dict]:
+    """
+    Colapsa el alias "<modelo>-latest" con la fila de la versión concreta a la
+    que apunta, cuando el id y la tarifa encajan sin ambigüedad ("Mistral
+    Medium (latest)" -> "Mistral Medium 3.5"). Se conserva la fila versionada
+    y el id del alias pasa a `aliases`.
+    """
+    by_provider = {}
+    for r in rows:
+        by_provider.setdefault(r["provider"], []).append(r)
+
+    dropped = set()
+    for prows in by_provider.values():
+        for alias in prows:
+            mid = alias.get("modelId") or ""
+            if not LATEST_ID_RE.search(mid) or (alias.get("extras") or {}).get("plans"):
+                continue
+            prefix = LATEST_ID_RE.sub("", mid)
+            cands = [
+                r for r in prows
+                if r is not alias and id(r) not in dropped
+                and (r.get("modelId") or "").startswith(prefix)
+                and not LATEST_ID_RE.search(r.get("modelId") or "")
+                and price_sig(r) == price_sig(alias)
+            ]
+            if len(cands) != 1:
+                continue
+            target = cands[0]
+            merged = list(target.get("aliases") or [])
+            for alt in [mid] + list(alias.get("aliases") or []):
+                if alt and alt != target.get("modelId") and alt not in merged:
+                    merged.append(alt)
+            target["aliases"] = merged
+            dropped.add(id(alias))
+    return [r for r in rows if id(r) not in dropped]
+
+
+def dedupe(rows: list[dict]) -> list[dict]:
+    """
+    Colapsa filas que son el mismo modelo con la misma tarifa: alias "-latest"
+    frente a la instantánea con fecha, endpoints "preview" frente a los
+    estables, o el mismo modelo listado con dos ids. Las instantáneas con
+    precios distintos (p. ej. GPT-4o 2024-05-13 vs 4o) se conservan porque son
+    modelos con tarifa propia.
+    """
+    def visible_name(name: str) -> str:
+        return re.sub(r"\s+", " ", LATEST_RE.sub("", name or "")).strip().lower()
+
+    def rank(r: dict):
+        # Preferimos la fila con extras (planes Go), con id canónico y, a
+        # igualdad, la versión estable y el id más corto (alias en vez de
+        # snapshot fechado).
+        mid = r.get("modelId") or ""
+        unstable = 1 if re.search(r"preview|experimental|beta", mid, re.IGNORECASE) else 0
+        return (
+            0 if (r.get("extras") or {}).get("plans") else 1,
+            0 if r.get("canonicalId") else 1,
+            unstable,
+            len(mid),
+            mid,
+        )
+
+    kept = {}
+    for r in rows:
+        key = (
+            r["provider"],
+            visible_name(r["name"]),
+            tuple(r.get(k) for k in PRICE_FIELDS),
+        )
+        cur = kept.get(key)
+        if cur is None:
+            kept[key] = r
+            continue
+        win, lose = (r, cur) if rank(r) < rank(cur) else (cur, r)
+        aliases = list(win.get("aliases") or [])
+        for alt in [lose.get("modelId")] + list(lose.get("aliases") or []):
+            if alt and alt != win.get("modelId") and alt not in aliases:
+                aliases.append(alt)
+        win["aliases"] = aliases
+        kept[key] = win
+    return list(kept.values())
 
 
 def main() -> int:
@@ -154,6 +273,16 @@ def main() -> int:
                 rows.append(row)
                 n += 1
         providers_ok[pid] = n
+
+    # Precio 0 real frente a precio no publicado ("-" en la tabla).
+    mark_price_state(rows)
+
+    # Alias "-latest" apuntando a la versión concreta del mismo modelo.
+    rows = resolve_latest_aliases(rows)
+
+    # Alias "-latest" y snapshots con el mismo nombre y tarifa: una sola fila.
+    rows = dedupe(rows)
+    providers_ok = {pid: sum(1 for r in rows if r["provider"] == pid) for pid in providers_ok}
 
     # Detección de modelos superados, por proveedor: si existe una versión
     # superior de la misma familia que iguala o mejora en todo (precios <=,

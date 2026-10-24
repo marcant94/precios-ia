@@ -28,6 +28,12 @@
   <label class="switch" id="depWrap" title="Mostrar modelos obsoletos">
     <input type="checkbox" id="depSwitch"> Mostrar obsoletos
   </label>
+  <label class="switch" title="Solo modelos con razonamiento (capacidad, no modalidad)">
+    <input type="checkbox" id="reasonSwitch"> Razonamiento
+  </label>
+  <label class="switch" title="Solo modelos con function calling (tool_call)">
+    <input type="checkbox" id="toolsSwitch"> Herramientas
+  </label>
   <label class="switch" title="Estima peticiones con tu presupuesto y tasa de caché">
     <input type="checkbox" id="estSwitch"> Estimar peticiones
   </label>
@@ -40,13 +46,17 @@
   <span>Presupuesto $ si el modelo no declara límite: <input type="number" id="estBudget" value="10" min="1" step="1"></span>
   <span class="muted">Coste por petición = (entrada × precio efectivo con caché + salida × precio salida). Peticiones = presupuesto / coste.</span>
 </div>
+<div class="toolbar">
+  <span class="muted">Acepta:</span>
+  <div class="mod-btns" id="modBtns"></div>
+</div>
 <div class="table-wrap">
 <table id="tbl">
   <thead></thead>
   <tbody></tbody>
 </table>
 </div>
-<footer>Datos: models.dev API + docs oficiales (OpenCode Go, Groq). Precios $/M tokens salvo indicación.</footer>
+<footer>Datos: models.dev API + docs oficiales (OpenCode Go, Groq). Precios $/M tokens salvo indicación. «-» = el proveedor no publica el precio del modelo.</footer>
 <script src="assets/app.js"></script>
 </body>
 </html>

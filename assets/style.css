@@ -15,6 +15,15 @@ select { padding: 7px 10px; border-radius: 6px; border: 1px solid #30363d; backg
   border: 1px solid #30363d; background: #161b22; color: #c9d1d9; cursor: pointer; font-size: 0.8rem; }
 .prov-btn img { width: 16px; height: 16px; }
 .prov-btn.active { border-color: #58a6ff; background: #1f6feb33; color: #f0f6fc; }
+.mod-btns { display: flex; gap: 6px; flex-wrap: wrap; }
+.mod-btn { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border-radius: 14px;
+  border: 1px solid #30363d; background: #161b22; color: #c9d1d9; cursor: pointer; font-size: 0.8rem; }
+.mod-btn:hover { border-color: #58a6ff66; }
+.mod-btn.active { border-color: #58a6ff; background: #1f6feb33; color: #f0f6fc; }
+.mods { display: inline-flex; gap: 3px; white-space: nowrap; }
+.mod { display: inline-flex; align-items: center; justify-content: center; min-width: 22px; height: 20px;
+  padding: 0 2px; font-size: 0.8rem; line-height: 1; border-radius: 4px;
+  background: #21262d; border: 1px solid #30363d; }
 #errorBanner { display: none; background: #f8514922; border: 1px solid #f8514966; color: #ffa198;
   padding: 10px 14px; border-radius: 8px; margin: 12px 0; font-size: 0.88rem; }
 .table-wrap { overflow: auto; border: 1px solid #30363d; border-radius: 8px; }
@@ -32,6 +41,8 @@ td.numeric, th.numeric { text-align: right; font-variant-numeric: tabular-nums; 
 .tag-deprecated { padding: 2px 6px; border-radius: 4px; font-size: 11px; background: #6e768122; color: #8b949e; border: 1px solid #6e768166; }
 .tag-promo { padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #9e6a0322; color: #e3b341; border: 1px solid #9e6a0366; }
 .tag-budget { padding: 2px 6px; border-radius: 4px; font-size: 11px; font-weight: 600; background: #23863622; color: #3fb950; border: 1px solid #23863666; }
+.tag-tools { padding: 1px 5px; border-radius: 4px; font-size: 11px; background: #1f6feb22; color: #79c0ff; border: 1px solid #1f6feb66; }
+.tag-reason { padding: 1px 5px; border-radius: 4px; font-size: 11px; background: #8957e522; color: #d2a8ff; border: 1px solid #8957e566; }
 .tag-status { padding: 2px 6px; border-radius: 4px; font-size: 11px; }
 .status-ga { background: #23863622; color: #3fb950; border: 1px solid #23863666; }
 .status-preview { background: #9e6a0322; color: #e3b341; border: 1px solid #9e6a0366; }
