@@ -194,11 +194,18 @@ def main() -> int:
         extras_groq = None
         errors.append({"provider": "groq", "message": "sin extras (enricher falló o no ejecutado)", "date": datetime.now(timezone.utc).isoformat()})
 
-    # Indexar extras Go por (plan, norm)
-    go_by_plan_norm = {}
+    # Indexar extras Go por id de modelo de OpenCode y, como respaldo, por nombre
+    # normalizado. El `name` de models.dev no siempre coincide con el del doc
+    # (p. ej. "DeepSeek V4.1 Flash 1017" vs "DeepSeek V4.1 Flash"), así que el id
+    # es la clave fiable cuando existe.
+    go_by_id = {}
+    go_by_norm = {}
     if extras_go:
         for r in extras_go:
-            go_by_plan_norm.setdefault((r.get("plan", ""), r.get("norm", "")), []).append(r)
+            mid = (r.get("modelId") or "").strip().lower()
+            if mid:
+                go_by_id.setdefault(mid, []).append(r)
+            go_by_norm.setdefault(r.get("norm", ""), []).append(r)
 
     groq_by_id = {}
     if extras_groq:
@@ -223,10 +230,9 @@ def main() -> int:
             if pid == "opencode-go" and extras_go is not None:
                 # Unificar los planes (Go / Go Plus) del mismo modelo en una
                 # sola fila; el detalle mostrará un bloque por plan.
-                matched = []
-                for (plan, pn), recs in go_by_plan_norm.items():
-                    if pn == norm:
-                        matched.extend(recs)
+                matched = (go_by_id.get((row["modelId"] or "").strip().lower())
+                           or go_by_norm.get(norm)
+                           or [])
                 if matched:
                     # Ordenar Go antes que Go Plus
                     matched.sort(key=lambda r: 0 if r.get("plan") == "Go" else 1)
