@@ -1,13 +1,19 @@
 #!/usr/bin/env python3
 """
-Enricher OpenCode Go: extrae planes, budgets mensuales, estimaciones de
-peticiones, modelId y retención desde la doc oficial.
+Enricher OpenCode Go: extrae planes, límites mensuales, estimaciones de
+peticiones, modelId y retención desde la consola y la doc oficial.
 
-Fuente: https://opencode.ai/v2/docs/console/go/
-(la antigua /docs/es/go/ devuelve 404 desde 2026-10)
+Fuentes (2026-11):
+- https://opencode.ai/console/go — tabla "Limits" con id de modelo, nota,
+  estimación de peticiones/5 h y límite mensual por plan (Go / Go Plus).
+- https://opencode.ai/docs/console/go.md — tabla de retención de datos.
 
 Salida: data/extras/opencode-go.json — lista de registros
-{name, plan, monthlyBudget, req5h, reqWeekly, reqMonthly, modelId, retention}
+{name, norm, plan, condition, monthlyBudget, req5h, reqWeekly, reqMonthly,
+ modelId, retention, temporal, promo}
+
+La doc reparte los topes así: 5 h = 20% del mensual y semana = 50%, de modo
+que reqWeekly/reqMonthly se derivan de las peticiones/5 h publicadas.
 
 Si falla, exit != 0 y el orquestador lo registra en errors.json
 (proveedor aporta cero extras, pero la base models.dev sigue visible).
@@ -22,47 +28,102 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from common import clean_text, fetch_html, normalize_name
 
-PAGE_URL = "https://opencode.ai/v2/docs/console/go/"
-BANNER_URLS = [
-    "https://opencode.ai/go",
-    "https://opencode.ai/zen",
-]
+CONSOLE_URL = "https://opencode.ai/console/go"
+DOCS_URL = "https://opencode.ai/docs/console/go.md"
+
+PLANS = ("Go", "Go Plus")
+UNLIMITED = "Ilimitado"
+
+PAIR_RE = re.compile(r"(Go(?: Plus)?):\s*([^;]+?)\s*(?:;|$)")
 
 
-def fetch_promo_banners() -> list:
-    banners = []
-    for url in BANNER_URLS:
-        try:
-            html = fetch_html(url)
-        except Exception:
+def parse_plan_values(text: str) -> dict:
+    """'Go: 98; Go Plus: 392' -> {'Go': '98', 'Go Plus': '392'}."""
+    return {m.group(1): m.group(2).strip() for m in PAIR_RE.finditer(text)}
+
+
+def parse_console(html: str) -> dict:
+    """Devuelve {modelId: {name, note, requests, monthly}}."""
+    table = re.search(
+        r'<table[^>]*class="console-go-models-table"[\s\S]*?</table>', html, re.IGNORECASE
+    )
+    if not table:
+        raise RuntimeError("No se encontró la tabla de modelos en la consola de Go")
+
+    def sr_only(chunk: str) -> str:
+        m = re.search(r'<span class="sr-only">([^<]*)</span>', chunk)
+        return clean_text(m.group(1)) if m else ""
+
+    models = {}
+    rows = re.finditer(
+        r'<tr\b[^>]*data-model="([^"]+)"[^>]*>([\s\S]*?)</tr>', table.group(0), re.IGNORECASE
+    )
+    for m in rows:
+        mid, row = m.group(1), m.group(2)
+        name = re.search(r'data-layer="model-name"[^>]*title="([^"]*)"', row)
+        note = re.search(r'data-layer="model-note"[^>]*>([^<]*)<', row)
+        req_cell = re.search(
+            r'<td[^>]*data-allowance-type="requests"[^>]*>([\s\S]*?)</td>', row, re.IGNORECASE
+        )
+        use_cell = re.search(
+            r'<td[^>]*data-allowance-type="usage"[^>]*>([\s\S]*?)</td>', row, re.IGNORECASE
+        )
+        models[mid] = {
+            "name": clean_text(name.group(1)) if name else mid,
+            "note": clean_text(note.group(1)) if note else "",
+            "requests": parse_plan_values(sr_only(req_cell.group(1)) if req_cell else ""),
+            "monthly": parse_plan_values(sr_only(use_cell.group(1)) if use_cell else ""),
+        }
+    if not models:
+        raise RuntimeError("La tabla de la consola no contiene filas de modelos")
+    return models
+
+
+def parse_retention(md: str) -> dict:
+    """Tabla 'Model | Data retention' del markdown -> {norm: retención}."""
+    out = {}
+    for line in md.splitlines():
+        line = line.strip()
+        if not line.startswith("|"):
             continue
-        for m in re.finditer(r'data-component="desktop-app-banner"', html):
-            chunk = html[m.start():m.start() + 2000]
-            tm = re.search(r'data-slot="text"[^>]*>([\s\S]*?)</span>', chunk)
-            if tm:
-                text = clean_text(tm.group(1))
-                if text and text not in banners:
-                    banners.append(text)
-    return banners
-
-
-def split_tables(html: str):
-    return [m.group(0) for m in re.finditer(r'<table[\s\S]*?</table>', html, re.IGNORECASE)]
-
-
-def table_headers(table: str) -> list:
-    ths = re.findall(r'<th[\s\S]*?>([\s\S]*?)<\/th>', table, re.IGNORECASE)
-    return [clean_text(x).lower() for x in ths]
-
-
-def table_rows(table: str) -> list:
-    rows = re.findall(r'<tr[\s\S]*?>([\s\S]*?)<\/tr>', table, re.IGNORECASE)
-    out = []
-    for r in rows[1:]:
-        tds = [clean_text(x) for x in re.findall(r'<td[\s\S]*?>([\s\S]*?)<\/td>', r, re.IGNORECASE)]
-        if tds:
-            out.append(tds)
+        cells = [c.strip() for c in line.strip("|").split("|")]
+        if len(cells) != 2 or cells[0].lower() == "model":
+            continue
+        if set(cells[0]) <= set("-: "):
+            continue
+        retention = re.sub(r"\\", "", cells[1]).rstrip("*").strip()
+        out[normalize_name(cells[0])] = retention
     return out
+
+
+def lookup_retention(name: str, table: dict) -> str:
+    """Busca por nombre exacto y, si no, ignorando un sufijo numérico de versión
+    ("DeepSeek V4.1 Flash 1017" frente a "DeepSeek V4.1 Flash" en la doc)."""
+    norm = normalize_name(name)
+    if norm in table:
+        return table[norm]
+    longer = [v for k, v in table.items() if norm.startswith(k) and norm[len(k):].isdigit()]
+    shorter = [v for k, v in table.items() if k.startswith(norm) and k[len(norm):].isdigit()]
+    candidates = longer or shorter
+    return candidates[0] if len(candidates) == 1 else ""
+
+
+def request_fields(value: str) -> tuple[str, str, str]:
+    """Peticiones 5 h publicadas -> (5 h, semana, mes), derivando 50% y 100%."""
+    if not value:
+        return "", "", ""
+    digits = value.replace(",", "")
+    if not digits.isdigit():
+        return value, value, value
+    monthly = int(digits) * 5
+    weekly = round(monthly * 0.5)
+    return f"{int(digits):,}", f"{weekly:,}", f"{monthly:,}"
+
+
+def normalize_budget(value: str) -> str:
+    if value in ("∞", "unlimited", "Unlimited"):
+        return UNLIMITED
+    return value
 
 
 def main() -> int:
@@ -70,92 +131,41 @@ def main() -> int:
     ap.add_argument("--out", default="data/extras")
     args = ap.parse_args()
 
-    html = fetch_html(PAGE_URL)
-    tables = split_tables(html)
-    if not tables:
-        raise RuntimeError(f"No se encontraron tablas en {PAGE_URL}")
-
-    price_tables = []    # (headers, rows) con Monthly limit
-    req_tables = []      # (headers, rows) con Requests per 5 hours
-    endpoints_map = {}
-    privacy_map = {}
-
-    for table in tables:
-        headers = table_headers(table)
-        rows = table_rows(table)
-        if not rows:
-            continue
-        h = " ".join(headers)
-        if "monthly limit" in h or "monthly" in h and "input" in h:
-            price_tables.append((headers, rows))
-        elif "5 hour" in h or "requests per" in h:
-            req_tables.append((headers, rows))
-        elif "model id" in h:
-            for tds in rows:
-                if len(tds) >= 2:
-                    endpoints_map[normalize_name(tds[0])] = tds[1]
-        elif "retention" in h or "retenci" in h:
-            for tds in rows:
-                if len(tds) >= 3:
-                    privacy_map[normalize_name(tds[0])] = tds[2]
-
-    if not price_tables:
-        raise RuntimeError("No se encontraron tablas de precios (Monthly limit)")
-    # Primera tabla de precios = Go ($10/mes), segunda = Go Plus ($40/mes)
-    plans = ["Go", "Go Plus"]
-    price_by_plan = {}
-    for i, (headers, rows) in enumerate(price_tables[:2]):
-        plan = plans[i] if i < len(plans) else f"Plan{i}"
-        price_by_plan[plan] = rows
-    req_by_plan = {}
-    for i, (headers, rows) in enumerate(req_tables[:2]):
-        plan = plans[i] if i < len(plans) else f"Plan{i}"
-        req_by_plan[plan] = {normalize_name(r[0]): r for r in rows if r}
-
-    # Promos de banners (opcional)
-    banner_promos = {}
+    models = parse_console(fetch_html(CONSOLE_URL))
     try:
-        for banner in fetch_promo_banners():
-            words = banner.split()
-            for size in range(1, min(7, len(words) + 1)):
-                for j in range(len(words) - size + 1):
-                    banner_promos.setdefault(normalize_name(' '.join(words[j:j + size])), banner)
+        retention = parse_retention(fetch_html(DOCS_URL))
     except Exception as e:
-        print(f"banners: omitidos ({e})")
+        print(f"retención: omitida ({e})")
+        retention = {}
 
     records = []
-    for plan, rows in price_by_plan.items():
-        reqs = req_by_plan.get(plan, {})
-        for tds in rows:
-            if len(tds) < 5:
+    for mid, m in models.items():
+        note = m["note"]
+        temporal = bool(re.search(r"limited time|tiempo limitado", note, re.IGNORECASE))
+        condition = re.sub(r"\s*·?\s*limited time\b", "", note, flags=re.IGNORECASE).strip(" ·")
+        norm = normalize_name(m["name"])
+        for plan in PLANS:
+            monthly = m["monthly"].get(plan, "")
+            if not monthly:
                 continue
-            full_name = tds[0]
-            m_cond = re.search(r'\((.*?)\)', full_name)
-            cond = m_cond.group(1).strip() if m_cond else ""
-            base_name = re.sub(r'\s*\(.*?\)', '', full_name).strip()
-            norm = normalize_name(base_name)
-            rq = reqs.get(norm, [])
-            budget = tds[5] if len(tds) > 5 else ""
-            temporal = bool(re.search(r'limited time|tiempo limitado', budget, re.IGNORECASE))
-            if re.search(r'unlimited.*limited|ilimitado por tiempo', budget, re.IGNORECASE):
-                budget = "Ilimitado"
+            req5h, reqWeekly, reqMonthly = request_fields(m["requests"].get(plan, ""))
             records.append({
-                "name": base_name,
+                "name": m["name"],
                 "norm": norm,
                 "plan": plan,
-                "condition": cond,
-                "monthlyBudget": budget,
-                "req5h": rq[1] if len(rq) > 1 else "",
-                "reqWeekly": rq[2] if len(rq) > 2 else "",
-                "reqMonthly": rq[3] if len(rq) > 3 else "",
-                "modelId": endpoints_map.get(norm, ""),
-                "retention": privacy_map.get(norm, ""),
+                "condition": condition,
+                "monthlyBudget": normalize_budget(monthly),
+                "req5h": req5h,
+                "reqWeekly": reqWeekly,
+                "reqMonthly": reqMonthly,
+                "modelId": mid,
+                "retention": lookup_retention(m["name"], retention),
                 "temporal": temporal,
-                "promo": banner_promos.get(norm, ""),
+                "promo": "",
             })
 
     if not records:
-        raise RuntimeError("No se pudieron parsear filas de precios de OpenCode Go")
+        raise RuntimeError("No se pudieron parsear límites de OpenCode Go")
 
     os.makedirs(args.out, exist_ok=True)
     path = os.path.join(args.out, "opencode-go.json")
